@@ -35,12 +35,34 @@ class AccountLifecycleTest(unittest.TestCase):
     def test_automatic_elimination_rules_are_strict(self):
         cases = [
             ("100.00", 0, None),
-            ("100.01", 0, "累计消费大于100元且无加粉"),
+            ("100.01", 0, "累计现金消费大于100元且无加粉"),
             ("120.00", 1, None),
-            ("120.01", 1, "累计加粉成本大于120元"),
+            ("120.01", 1, "累计加粉现金成本大于120元"),
             ("240.00", 2, None),
-            ("240.01", 2, "累计加粉成本大于120元"),
+            ("240.01", 2, "累计加粉现金成本大于120元"),
         ]
         for spend, adds, expected in cases:
             with self.subTest(spend=spend, adds=adds):
                 self.assertEqual(elimination_reason(Decimal(spend), adds), expected)
+
+    def test_elimination_reason_supports_the_selected_copy_cash_standard(self):
+        self.assertEqual(
+            elimination_reason(
+                Decimal("200"),
+                2,
+                cash_spend=Decimal("150"),
+                add_cost_limit=Decimal("70"),
+                conversion_label="复制",
+            ),
+            "累计复制现金成本大于70元",
+        )
+
+    def test_elimination_empty_spend_uses_cash_spend(self):
+        self.assertIsNone(
+            elimination_reason(
+                Decimal("160"),
+                0,
+                cash_spend=Decimal("80"),
+                require_cash_spend=True,
+            )
+        )

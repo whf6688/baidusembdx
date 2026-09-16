@@ -1,5 +1,5 @@
 @layer features {
-  .project-home { width: 100%; max-width: 1440px; }
+  .project-home { width: 100%; max-width: none; }
   .home-dashboard-grid { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 12px; }
   .home-dashboard-widget { min-width: 0; overflow: hidden; border: 1px solid var(--ads-border); border-radius: 8px; background: var(--ads-surface); box-shadow: 0 1px 2px rgba(32, 36, 43, .035); transition: border-color 160ms ease; }
   .home-dashboard-widget:hover { border-color: var(--ads-border-strong, #8c959f); }
@@ -44,7 +44,8 @@
   .runtime-health-head > .fui-Badge { flex: 0 0 auto; }
   .runtime-health-message { min-height: 34px; margin: 10px 10px 0; padding: 7px 9px; border: 1px solid var(--ads-border-subtle); border-radius: var(--ads-radius-control); color: var(--ads-text-secondary); background: var(--ads-surface-subtle); font-size: 11px; line-height: 18px; }
   .runtime-health-message.is-protected { border-color: #ecd7ad; color: #76520c; background: #fff8db; }
-  .runtime-job-column { margin: 10px; padding: 10px; border: 1px solid var(--ads-border-subtle); border-radius: var(--ads-radius-surface); background: var(--ads-surface-subtle); }
+  .runtime-health-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 10px; }
+  .runtime-job-column, .runtime-closure-column { min-width: 0; padding: 10px; border: 1px solid var(--ads-border-subtle); border-radius: var(--ads-radius-surface); background: var(--ads-surface-subtle); }
   .runtime-job-list-title { min-height: 22px; margin-bottom: 7px; color: var(--ads-text-secondary); font-size: 11px; font-weight: 500; }
   .runtime-job-list { display: grid; gap: 5px; }
   .runtime-job-row { display: flex; min-height: 48px; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px; border: 1px solid var(--ads-border-subtle); border-left: 3px solid var(--ads-text-muted); border-radius: var(--ads-radius-control); background: var(--ads-surface); }
@@ -57,6 +58,12 @@
   .runtime-job-side { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; }
   .runtime-job-side .fui-Button { min-width: 48px; min-height: 28px; padding-inline: 10px; font-size: 11px; }
   .runtime-job-empty { min-height: 48px; display: grid; place-items: center; color: var(--ads-text-secondary); font-size: 11px; }
+  .runtime-closure-list { display: grid; gap: 5px; }
+  .runtime-closure-step { display: grid; min-height: 48px; grid-template-columns: 28px minmax(0, 1fr); align-items: center; gap: 9px; padding: 7px 9px; border: 1px solid var(--ads-border-subtle); border-radius: var(--ads-radius-control); background: var(--ads-surface); }
+  .runtime-closure-step > span { display: grid; width: 28px; height: 28px; place-items: center; border-radius: 50%; color: var(--ads-primary); background: var(--ads-surface-selected); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .runtime-closure-step > div { display: grid; min-width: 0; gap: 2px; }
+  .runtime-closure-step strong { color: var(--ads-text); font-size: 12px; font-weight: 500; line-height: 18px; }
+  .runtime-closure-step small { overflow: hidden; color: var(--ads-text-secondary); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
   .runtime-health-widget > .fui-MessageBar { margin: 0 10px 10px; }
   .project-dialog { width: min(720px, calc(100vw - 40px)); max-width: 720px; }
   .project-dialog-content { display: grid; gap: 16px; padding-block: 16px 20px; }
@@ -74,13 +81,18 @@
   @media (min-width: 761px) {
     .home-dashboard-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .project-directory { grid-column: 1 / -1; }
+    .runtime-health-widget { grid-column: 1 / -1; }
   }
 
   @media (min-width: 1320px) {
     .home-dashboard-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-    .project-directory { grid-column: span 2; }
-    .runtime-health-widget { grid-column: 3; }
-    .code-sync-widget { grid-column: 4; }
+    .project-directory { grid-column: 1 / span 2; grid-row: 1; }
+    .runtime-health-widget { grid-column: 3 / span 2; grid-row: 1 / span 2; }
+    .code-sync-widget { grid-column: 1; grid-row: 2; }
+  }
+
+  @media (max-width: 900px) {
+    .runtime-health-body { grid-template-columns: minmax(0, 1fr); }
   }
 
   @media (max-width: 640px) {

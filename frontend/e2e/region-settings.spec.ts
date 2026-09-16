@@ -230,9 +230,12 @@ test('workflow help owns the hierarchy and strategies no longer expose a referen
 
   await strategyNavigation.getByRole('button', { name: '实时闭环' }).click()
   const workspace = page.getByRole('region', { name: '实时闭环工作区' })
-  await expect(workspace.getByText('项目数据刷新', { exact: true })).toBeVisible()
+  await expect(workspace.getByText('项目数据刷新', { exact: true })).toHaveCount(0)
+  await expect(workspace.getByText('页面时区', { exact: true })).toHaveCount(0)
+  await expect(workspace.getByText('项目闭环刷新周期（分钟）', { exact: true })).toBeVisible()
   await expect(workspace.getByText('运行与安全状态', { exact: true })).toHaveCount(0)
-  await expect(workspace.getByText('闭环运行状态', { exact: true })).toBeVisible()
+  await expect(workspace.getByText('闭环运行状态', { exact: true })).toHaveCount(0)
+  await expect(workspace.getByText('规则评估', { exact: true })).toHaveCount(0)
   await page.screenshot({
     path: 'artifacts/ui-audit/latest/pages/automatic-strategies.png',
     animations: 'disabled',

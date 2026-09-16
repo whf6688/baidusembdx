@@ -101,7 +101,7 @@ export function ReportsPage({ project, canManage }: { project: Project; canManag
   };
 
   const summary = report?.summary;
-  const isCopyJudgment = report?.cost_judgment.mode === "copy_cash";
+  const isCopyJudgment = report?.cost_judgment?.mode === "copy_cash";
   const columns = reportColumns(isCopyJudgment);
   const overview = [
     ["impressions", "展现", count(summary?.impressions)], ["clicks", "点击", count(summary?.clicks)], ["spend", "消费", overviewMoney(summary?.spend)],

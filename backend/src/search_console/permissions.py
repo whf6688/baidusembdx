@@ -57,10 +57,16 @@ def normalize_permissions(value: dict | None) -> dict[str, PermissionLevel]:
     for module in MODULES:
         level = source.get(module, DEFAULT_MEMBER_PERMISSIONS[module])
         result[module] = level if level in LEVEL_RANK else DEFAULT_MEMBER_PERMISSIONS[module]
-    # Only the fixed owner may manage member permissions.
-    if result["member_management"] == "manage":
-        result["member_management"] = "view"
     return result
+
+
+def ad_build_operator_names(access: ProjectAccess) -> tuple[str, ...] | None:
+    """Return the stricter auto-launch scope, independent of general data visibility."""
+    if access.is_owner:
+        return None
+    if access.member is None or not access.member.operator_name:
+        return ()
+    return (access.member.operator_name,)
 
 
 def get_project_member(

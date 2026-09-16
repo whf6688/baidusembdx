@@ -31,13 +31,35 @@ from search_console.account_judgment import (
         ({"remote_status_code": 11, "plan_count": 2, "paused_plan_count": 2, "historical_impressions": 0, "confirmed_eliminated": False, "has_active_allocation": False}, ACCOUNT_STATUS_ALL_PAUSED),
         ({"remote_status_code": 11, "plan_count": 2, "paused_plan_count": 1, "historical_impressions": 0, "confirmed_eliminated": False, "has_active_allocation": False}, ACCOUNT_STATUS_BUDGET_LOW),
         ({"remote_status_code": 1, "plan_count": 1, "paused_plan_count": 0, "historical_impressions": 0, "confirmed_eliminated": False, "has_active_allocation": False}, ACCOUNT_STATUS_ONLINE),
-        ({"remote_status_code": 4, "plan_count": 0, "paused_plan_count": 0, "historical_impressions": 1, "confirmed_eliminated": False, "has_active_allocation": True}, ACCOUNT_STATUS_ELIMINATED),
+        ({"remote_status_code": 4, "plan_count": 0, "paused_plan_count": 0, "historical_impressions": 1, "confirmed_eliminated": False, "has_active_allocation": True}, ACCOUNT_STATUS_REJECTED),
+        ({"remote_status_code": 1, "plan_count": 0, "paused_plan_count": 0, "historical_impressions": 1, "confirmed_eliminated": False, "has_active_allocation": False}, ACCOUNT_STATUS_EMPTY),
+        ({"remote_status_code": 1, "plan_count": 0, "paused_plan_count": 0, "historical_impressions": 1, "confirmed_eliminated": True, "has_active_allocation": False}, ACCOUNT_STATUS_ELIMINATED),
         ({"remote_status_code": 1, "plan_count": 0, "paused_plan_count": 0, "historical_impressions": 0, "confirmed_eliminated": False, "has_active_allocation": True}, ACCOUNT_STATUS_PENDING),
         ({"remote_status_code": 1, "plan_count": 0, "paused_plan_count": 0, "historical_impressions": 0, "confirmed_eliminated": False, "has_active_allocation": False}, ACCOUNT_STATUS_EMPTY),
     ],
 )
 def test_account_status_priority(facts, expected):
     assert classify_account_status(**facts) == expected
+
+
+def test_auto_pause_waits_for_manual_retirement_before_marking_eliminated():
+    common = {
+        "remote_status_code": 1,
+        "historical_impressions": 100,
+        "has_active_allocation": False,
+    }
+    assert classify_account_status(
+        **common,
+        plan_count=2,
+        paused_plan_count=2,
+        confirmed_eliminated=False,
+    ) == ACCOUNT_STATUS_ALL_PAUSED
+    assert classify_account_status(
+        **common,
+        plan_count=0,
+        paused_plan_count=0,
+        confirmed_eliminated=True,
+    ) == ACCOUNT_STATUS_ELIMINATED
 
 
 @pytest.mark.parametrize(
@@ -55,11 +77,11 @@ def test_account_status_priority(facts, expected):
 )
 def test_cost_status_boundaries(spend, count, cost, recent_cost, recent_spend, recent_count, expected):
     assert classify_cost_status(
-        cumulative_spend=Decimal(spend),
+        cumulative_cash_spend=Decimal(spend),
         conversion_count=count,
         cash_cost=Decimal(cost) if cost is not None else None,
         recent_cash_cost=Decimal(recent_cost) if recent_cost is not None else None,
-        recent_spend=Decimal(recent_spend),
+        recent_cash_spend=Decimal(recent_spend),
         recent_conversion_count=recent_count,
         cold_start_spend_limit=Decimal("100"),
         cost_limit=Decimal("120"),

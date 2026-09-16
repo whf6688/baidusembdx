@@ -65,7 +65,7 @@ export function AccountWorkspaceTable(props: Props) {
   const [page, setPage] = useState(1), [pageSize, setPageSize] = useState(20)
   const [managerPage, setManagerPage] = useState(1), [managerPageSize, setManagerPageSize] = useState(20)
   const [searchInput, setSearchInput] = useState(''), [search, setSearch] = useState('')
-  const [sortBy, setSortBy] = useState(() => mode === 'operations' ? 'spend' : 'account_id'), [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(() => mode === 'operations' ? 'desc' : 'asc')
+  const [sortBy, setSortBy] = useState(() => mode === 'operations' ? 'default' : 'account_id'), [sortOrder, setSortOrder] = useState<'asc' | 'desc'>(() => mode === 'operations' ? 'desc' : 'asc')
   const [workspace, setWorkspace] = useState<AccountWorkspace | null>(null)
   const [management, setManagement] = useState<AccountManagement | null>(null)
   const [facets, setFacets] = useState<AccountWorkspaceFacets | null>(null)
@@ -86,6 +86,7 @@ export function AccountWorkspaceTable(props: Props) {
   const [retirementBusy, setRetirementBusy] = useState(false)
   const [retirementError, setRetirementError] = useState<string | null>(null)
   const [retirementNotice, setRetirementNotice] = useState<{ accountId: string; text: string } | null>(null)
+  const [retirementTask, setRetirementTask] = useState<{ taskId: string; accountId: string; accountName: string } | null>(null)
   const managerId = mode === 'management' ? (activeTab === 'managers' ? '' : activeTab) : managerFilter
   const showingManagers = mode === 'management' && activeTab === 'managers'
   const managerTabIds = ['managers', ...managers.map(item => item.id)]
@@ -93,6 +94,7 @@ export function AccountWorkspaceTable(props: Props) {
   useEffect(() => {
     if (mode === 'management' && activeTab !== 'managers' && !managers.some(item => item.id === activeTab)) setActiveTab('managers')
   }, [activeTab, managers, mode])
+  useEffect(() => { setRetirementTask(null) }, [project.id])
   const query = useMemo(() => {
     const q = new URLSearchParams({ page: String(page), page_size: String(pageSize), sort_by: sortBy, sort_order: sortOrder })
     const effectiveSearch = mode === 'management' && accountNames ? accountNames : search
@@ -140,6 +142,27 @@ export function AccountWorkspaceTable(props: Props) {
     return () => controller.abort()
   }, [project.id, query, refreshKey, mode, showingManagers])
   useEffect(() => { setPage(1); setSelected(new Set()); setLastSelected(null); setExpandedAccountId(null); setRetirementNotice(null) }, [project.id, activeTab, managerFilter, accountStatus, costStatus, search, operator, accountType, pageType, accountNames, remoteStatus, authorizationStatus, dateFrom, dateTo, mode])
+  useEffect(() => {
+    if (!retirementTask) return
+    const timer = window.setInterval(() => {
+      apiGet<{ status: string; last_error?: string | null }>(`/projects/${project.id}/tasks/${retirementTask.taskId}`)
+        .then(task => {
+          if (task.status === 'succeeded') {
+            window.clearInterval(timer)
+            setRetirementNotice({ accountId: retirementTask.accountId, text: `${retirementTask.accountName} 已完成淘汰，账户状态已更新为“已淘汰”` })
+            setOcpcDetails(current => { const next = { ...current }; delete next[retirementTask.accountId]; return next })
+            setRetirementTask(null)
+            setRefreshKey(value => value + 1)
+          } else if (task.status === 'failed' || task.status === 'blocked') {
+            window.clearInterval(timer)
+            setRetirementNotice({ accountId: retirementTask.accountId, text: task.last_error || `${retirementTask.accountName} 淘汰失败` })
+            setRetirementTask(null)
+          }
+        })
+        .catch(() => undefined)
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [project.id, retirementTask])
 
   const rows = mode === 'management' ? management?.rows || [] : workspace?.rows || []
   const total = mode === 'management' ? management?.total || 0 : workspace?.total || 0
@@ -176,7 +199,7 @@ export function AccountWorkspaceTable(props: Props) {
   const managerTotalPages = Math.max(1, Math.ceil(filteredManagers.length / managerPageSize))
   const safeManagerPage = Math.min(managerPage, managerTotalPages)
   const pagedManagers = filteredManagers.slice((safeManagerPage - 1) * managerPageSize, safeManagerPage * managerPageSize)
-  const isCopyJudgment = workspace?.cost_judgment.mode === 'copy_cash'
+  const isCopyJudgment = workspace?.cost_judgment?.mode === 'copy_cash'
   const overviewItems = workspace ? [
     ['impressions', '展现', count(workspace.summary.impressions)],
     ['clicks', '点击', count(workspace.summary.clicks)],
@@ -262,7 +285,7 @@ export function AccountWorkspaceTable(props: Props) {
         return <div key={key}><span>{label}</span><strong>{value}</strong><em className={`account-list-overview-trend ${trend?.direction || 'muted'}`}><b>{trendValue}</b><small>环比上周期</small></em></div>
       })}
     </section> : null}
-    {showingManagers ? <ManagerTable managers={pagedManagers} props={props} setArchiveTarget={setArchiveTarget} setPauseTarget={setPauseTarget} onEditSetting={openManagerSetting} /> : loading && !rows.length ? <Skeleton className="workspace-loading"><SkeletonItem /><SkeletonItem /><SkeletonItem /></Skeleton> : <div className="account-management-table-wrap"><table className={`account-management-table account-list-table${mode === 'operations' ? ' account-list-table--operations' : ''}`}>{mode === 'management' ? <ManagementRows rows={rows as AccountManagementRow[]} selected={selected} toggleOne={toggleOne} allPageSelected={allPageSelected} togglePage={togglePage} sortButton={sortButton} columnFilters={managementColumnFilters} props={props} /> : <OperationRows rows={rows as AccountWorkspaceRow[]} costMode={workspace?.cost_judgment.mode || 'add_cash'} selected={selected} toggleOne={toggleOne} allPageSelected={allPageSelected} togglePage={togglePage} sortButton={sortButton} columnFilters={operationColumnFilters} expandedAccountId={expandedAccountId} ocpcDetails={ocpcDetails} ocpcLoadingId={ocpcLoadingId} ocpcErrors={ocpcErrors} onToggleOcpcProjects={toggleAccountOcpcProjects} onRetireAccount={row => { setRetirementError(null); setRetirementTarget(row) }} retirementNotice={retirementNotice} canManage={canManage} />}</table></div>}
+    {showingManagers ? <ManagerTable managers={pagedManagers} props={props} setArchiveTarget={setArchiveTarget} setPauseTarget={setPauseTarget} onEditSetting={openManagerSetting} /> : loading && !rows.length ? <Skeleton className="workspace-loading"><SkeletonItem /><SkeletonItem /><SkeletonItem /></Skeleton> : <div className="account-management-table-wrap"><table className={`account-management-table account-list-table${mode === 'operations' ? ' account-list-table--operations' : ''}`}>{mode === 'management' ? <ManagementRows rows={rows as AccountManagementRow[]} selected={selected} toggleOne={toggleOne} allPageSelected={allPageSelected} togglePage={togglePage} sortButton={sortButton} columnFilters={managementColumnFilters} props={props} /> : <OperationRows rows={rows as AccountWorkspaceRow[]} costMode={workspace?.cost_judgment?.mode || 'add_cash'} selected={selected} toggleOne={toggleOne} allPageSelected={allPageSelected} togglePage={togglePage} sortButton={sortButton} columnFilters={operationColumnFilters} expandedAccountId={expandedAccountId} ocpcDetails={ocpcDetails} ocpcLoadingId={ocpcLoadingId} ocpcErrors={ocpcErrors} onToggleOcpcProjects={toggleAccountOcpcProjects} onRetireAccount={row => { setRetirementError(null); setRetirementTarget(row) }} retirementNotice={retirementNotice} canManage={canManage} />}</table></div>}
     {showingManagers ? <ViewportStickyPagination page={safeManagerPage} totalPages={managerTotalPages} total={filteredManagers.length} pageSize={managerPageSize} loading={loading} ariaLabel="账户管家分页" onPageChange={setManagerPage} onPageSizeChange={size => { setManagerPageSize(size); setManagerPage(1) }} /> : <ViewportStickyPagination page={page} totalPages={totalPages} total={total} pageSize={pageSize} loading={loading} ariaLabel="账户列表分页" onPageChange={setPage} onPageSizeChange={size => { setPageSize(size); setPage(1) }} />}
     <Dialog open={archiveTarget !== null} onOpenChange={(_, data) => { if (!data.open && !props.archiveBusyId) setArchiveTarget(null) }}>
       <DialogSurface className="account-confirm-dialog"><DialogBody><DialogTitleWithSummary summary="删除后保留全部历史数据，不会修改百度端账户">删除账户管家</DialogTitleWithSummary><DialogContent><p>确定删除“{archiveTarget?.display_name || archiveTarget?.login_name}”吗；下辖账户及全部历史数据全部存档保留，不会修改百度端账户</p></DialogContent><DialogActions><Button appearance="secondary" disabled={Boolean(props.archiveBusyId)} onClick={() => setArchiveTarget(null)}>取消</Button><Button appearance="primary" disabled={Boolean(props.archiveBusyId)} onClick={async () => { if (!archiveTarget) return; await props.onArchiveManager?.(archiveTarget); setArchiveTarget(null) }}>{props.archiveBusyId ? '正在删除…' : '确认删除并存档'}</Button></DialogActions></DialogBody></DialogSurface>
@@ -274,7 +297,7 @@ export function AccountWorkspaceTable(props: Props) {
       <DialogSurface className="account-confirm-dialog manager-setting-dialog"><DialogBody><DialogTitleWithSummary summary={managerEditKind === 'rebate_rate' ? '修改后统一应用到该管家的下辖账户' : '余额低于此值时，账户管理导航文字标红；留空可关闭预警'}>{managerEditKind === 'rebate_rate' ? '修改返点' : '修改余额预警'}</DialogTitleWithSummary><DialogContent><div className="manager-setting-form"><label htmlFor="manager-setting-value">{managerEditKind === 'rebate_rate' ? '返点' : '余额预警'}</label><Input id="manager-setting-value" type="number" min={0} max={managerEditKind === 'rebate_rate' ? 100 : 999999999999} step="0.01" value={managerEditValue} contentBefore={managerEditKind === 'rebate_rate' ? undefined : <span>¥</span>} contentAfter={managerEditKind === 'rebate_rate' ? <span>%</span> : undefined} onChange={(_, data) => { setManagerEditValue(data.value); setManagerEditError(null) }} autoFocus /></div>{managerEditError ? <PopupMessage intent="error">{managerEditError}</PopupMessage> : null}</DialogContent><DialogActions><Button appearance="secondary" disabled={Boolean(props.settingsBusyId)} onClick={() => setManagerEditTarget(null)}>取消</Button><Button appearance="primary" disabled={Boolean(props.settingsBusyId)} onClick={() => void saveManagerSetting()}>{props.settingsBusyId ? '保存中…' : '保存'}</Button></DialogActions></DialogBody></DialogSurface>
     </Dialog>
     <Dialog open={retirementTarget !== null} onOpenChange={(_, data) => { if (!data.open && !retirementBusy) setRetirementTarget(null) }}>
-      <DialogSurface className="account-confirm-dialog account-retirement-dialog"><DialogBody><DialogTitleWithSummary summary="删除项目和计划，成功回读后标记为已淘汰">确认淘汰账户</DialogTitleWithSummary><DialogContent><div className="account-retirement-summary"><span aria-hidden="true">!</span><div><small>即将淘汰账户</small><strong>{retirementTarget?.account_name || '—'}</strong><em>{retirementTarget?.account_id || '—'}</em></div></div><ul className="account-retirement-scope"><li>删除 oCPC 项目</li><li>删除账户下已有计划；没有计划时自动跳过</li><li>计划删除会同步删除其下单元、关键词和创意</li><li>不会清空或释放账户；成功回读后标记为“已淘汰”</li></ul>{retirementError ? <PopupMessage intent="error">{retirementError}</PopupMessage> : null}</DialogContent><DialogActions><Button appearance="secondary" disabled={retirementBusy} onClick={() => setRetirementTarget(null)}>取消</Button><Button className="account-retirement-confirm" appearance="primary" disabled={retirementBusy} onClick={async () => { if (!retirementTarget) return; setRetirementBusy(true); setRetirementError(null); try { const preview = await apiPost<{ operation_id: string; campaign_count: number; ocpc_project_count: number }>(`/projects/${project.id}/accounts/${retirementTarget.id}/retirement`, {}); await apiPost<{ task_id: string }>(`/operations/${preview.operation_id}/confirm`, {}); setRetirementNotice({ accountId: retirementTarget.id, text: `已提交淘汰任务：${retirementTarget.account_name}（${preview.ocpc_project_count} 个 oCPC 项目、${preview.campaign_count} 个计划）` }); setRetirementTarget(null) } catch (reason) { setRetirementError(reason instanceof Error ? reason.message : '淘汰任务提交失败') } finally { setRetirementBusy(false) } }}>{retirementBusy ? '正在提交…' : '确认淘汰'}</Button></DialogActions></DialogBody></DialogSurface>
+      <DialogSurface className="account-confirm-dialog account-retirement-dialog"><DialogBody><DialogTitleWithSummary summary="删除项目和计划，成功回读后标记为已淘汰">确认淘汰账户</DialogTitleWithSummary><DialogContent><div className="account-retirement-summary"><span aria-hidden="true">!</span><div><small>即将淘汰账户</small><strong>{retirementTarget?.account_name || '—'}</strong><em>{retirementTarget?.account_id || '—'}</em></div></div><ul className="account-retirement-scope"><li>删除 oCPC 项目</li><li>删除账户下已有计划；没有计划时自动跳过</li><li>计划删除会同步删除其下单元、关键词和创意</li><li>不会清空或释放账户；成功回读后标记为“已淘汰”</li></ul>{retirementError ? <PopupMessage intent="error">{retirementError}</PopupMessage> : null}</DialogContent><DialogActions><Button appearance="secondary" disabled={retirementBusy} onClick={() => setRetirementTarget(null)}>取消</Button><Button className="account-retirement-confirm" appearance="primary" disabled={retirementBusy} onClick={async () => { if (!retirementTarget) return; setRetirementBusy(true); setRetirementError(null); try { const target = retirementTarget; const preview = await apiPost<{ operation_id: string; campaign_count: number; ocpc_project_count: number }>(`/projects/${project.id}/accounts/${target.id}/retirement`, {}); const confirmed = await apiPost<{ task_id: string }>(`/operations/${preview.operation_id}/confirm`, {}); setRetirementNotice({ accountId: target.id, text: `正在淘汰：${target.account_name}（${preview.ocpc_project_count} 个 oCPC 项目、${preview.campaign_count} 个计划）` }); setRetirementTask({ taskId: confirmed.task_id, accountId: target.id, accountName: target.account_name }); setRetirementTarget(null) } catch (reason) { setRetirementError(reason instanceof Error ? reason.message : '淘汰任务提交失败') } finally { setRetirementBusy(false) } }}>{retirementBusy ? '正在提交…' : '确认淘汰'}</Button></DialogActions></DialogBody></DialogSurface>
     </Dialog>
   </section>
 }

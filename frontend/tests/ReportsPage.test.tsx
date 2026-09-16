@@ -22,17 +22,17 @@ describe('ReportsPage', () => {
     await waitFor(() => expect(screen.getByText('测试账户')).toBeInTheDocument())
     const table = screen.getByRole('table')
     expect(within(table).getAllByRole('columnheader').map(cell => cell.textContent)).toEqual([
-      '运营', '账户管家', '账户类型', '页面类型', '账户', '账户ID', '余额', '展现', '点击', '消费↓', 'UV', '复制', '加粉', 'CPC', 'UV成本', '复制成本', '加粉成本', '现金消费', '现金加粉成本',
+      '成本判断', '运营', '账户管家', '账户类型', '页面类型', '账户', '账户ID', '余额', '展现', '点击', '消费↓', 'UV', '加粉', 'CPC', 'UV成本', '加粉成本', '现金消费', '现金加粉成本',
     ])
-    expect(['运营', '账户管家', '账户类型', '页面类型', '账户'].map(label => within(table).getByRole('button', { name: `筛选${label}` }))).toHaveLength(5)
+    expect(['成本判断', '运营', '账户管家', '账户类型', '页面类型', '账户'].map(label => within(table).getByRole('button', { name: `筛选${label}` }))).toHaveLength(6)
     expect(within(table).queryByRole('button', { name: '账户ID' })).not.toBeInTheDocument()
     expect(within(table).queryByRole('button', { name: '运营' })).not.toBeInTheDocument()
-    expect(screen.getByText('生命周期').closest('label')).toBeInTheDocument()
+    expect(screen.getAllByText('成本判断').some(node => node.closest('label'))).toBe(true)
     expect(screen.getAllByText('运营').some(node => node.closest('label'))).toBe(true)
     expect(screen.getAllByText('页面类型').some(node => node.closest('label'))).toBe(true)
 
-    fireEvent.change(screen.getByText('生命周期').closest('label')!.querySelector('select')!, { target: { value: '测试期' } })
-    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => decodeURIComponent(String(input)).includes('lifecycles=测试期'))).toBe(true))
+    fireEvent.change(screen.getAllByText('成本判断').find(node => node.closest('label'))!.closest('label')!.querySelector('select')!, { target: { value: '冷启动期' } })
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => decodeURIComponent(String(input)).includes('cost_statuses=冷启动期'))).toBe(true))
     fireEvent.click(within(table).getByRole('button', { name: '展现' }))
     await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('sort_by=impressions'))).toBe(true))
     fireEvent.click(within(table).getByRole('button', { name: '筛选账户管家' }))

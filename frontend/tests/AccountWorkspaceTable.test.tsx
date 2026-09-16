@@ -34,7 +34,7 @@ describe('AccountWorkspaceTable', () => {
     await waitFor(() => expect(onArchiveManager).toHaveBeenCalledWith(expect.objectContaining({ id: 'm1' })))
   })
 
-  it('uses spend-descending order and exposes required account metrics', async () => {
+  it('uses status-priority default order and exposes required account metrics', async () => {
     const onConfirmCampaignState = vi.fn()
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
@@ -62,13 +62,13 @@ describe('AccountWorkspaceTable', () => {
     expect(within(overview).getByText('¥ 59.20')).toBeInTheDocument()
     expect(within(overview).getByText('¥ 29.60')).toBeInTheDocument()
     expect(screen.getAllByRole('columnheader').map(cell => cell.textContent)).toEqual([
-      '', '状态', '生命周期', '运营', '账户管家', '账户类型', '页面类型', '账户名称', '账户ID',
-      '日预算', '展现', '点击', '消费↓', '加粉', 'CPM', 'CTR', '账户加粉成本', '现金加粉成本',
+      '', '账户状态', '成本判断', '运营', '账户管家', '账户类型', '页面类型', '账户名称', '账户ID',
+      '日预算', '展现', '点击', '消费', '加粉', 'CPM', 'CTR', '账户加粉成本', '现金加粉成本',
     ])
     const accountTable = screen.getByRole('table')
     expect(within(accountTable).getByText('¥ 44.40')).toBeInTheDocument()
     expect(within(accountTable).getByText('¥ 29.60')).toBeInTheDocument()
-    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('sort_by=spend') && String(input).includes('sort_order=desc'))).toBe(true)
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('sort_by=default') && String(input).includes('sort_order=desc'))).toBe(true)
     expect(screen.queryByText('账户余额')).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('checkbox', { name: '选择全部筛选结果' }))
     expect(screen.getByRole('button', { name: '批量时段（2）' })).toBeInTheDocument()
@@ -77,17 +77,17 @@ describe('AccountWorkspaceTable', () => {
     fireEvent.click(screen.getByRole('button', { name: '批量暂停（2）' }))
     expect(onConfirmCampaignState).toHaveBeenLastCalledWith(['a1', 'a2'], true)
     expect(screen.queryByRole('button', { name: /批量启停/ })).not.toBeInTheDocument()
-    expect(['状态', '生命周期', '运营', '账户管家', '账户类型', '页面类型', '账户名称'].map(label => screen.getByRole('button', { name: `筛选${label}` }))).toHaveLength(7)
-    fireEvent.click(screen.getByRole('button', { name: '筛选生命周期' }))
-    expect(screen.getByRole('group', { name: '生命周期筛选' })).toBeInTheDocument()
-    expect(screen.getByRole('checkbox', { name: '全选生命周期' })).toBeChecked()
-    fireEvent.click(screen.getByRole('checkbox', { name: '全选生命周期' }))
-    fireEvent.change(screen.getByPlaceholderText('搜索生命周期'), { target: { value: '测试' } })
-    fireEvent.click(screen.getByRole('checkbox', { name: '测试期' }))
-    fireEvent.change(screen.getByPlaceholderText('搜索生命周期'), { target: { value: '' } })
-    fireEvent.click(screen.getByRole('checkbox', { name: '空账户' }))
+    expect(['账户状态', '成本判断', '运营', '账户管家', '账户类型', '页面类型', '账户名称'].map(label => screen.getByRole('button', { name: `筛选${label}` }))).toHaveLength(7)
+    fireEvent.click(screen.getByRole('button', { name: '筛选成本判断' }))
+    expect(screen.getByRole('group', { name: '成本判断筛选' })).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: '全选成本判断' })).toBeChecked()
+    fireEvent.click(screen.getByRole('checkbox', { name: '全选成本判断' }))
+    fireEvent.change(screen.getByPlaceholderText('搜索成本判断'), { target: { value: '冷启动' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: '冷启动期' }))
+    fireEvent.change(screen.getByPlaceholderText('搜索成本判断'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('checkbox', { name: '空耗' }))
     fireEvent.click(screen.getByRole('button', { name: '应用' }))
-    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('lifecycles=') && decodeURIComponent(String(input)).includes('测试期,空账户'))).toBe(true))
+    await waitFor(() => expect(fetchMock.mock.calls.some(([input]) => String(input).includes('cost_statuses=') && decodeURIComponent(String(input)).includes('冷启动期,空耗'))).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: '测试账户' }))
     await waitFor(() => expect(screen.getByText('测试 oCPC 项目')).toBeInTheDocument())
     expect(screen.getByText('目标转化成本')).toBeInTheDocument()

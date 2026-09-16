@@ -100,6 +100,7 @@ export type RechargeReconciliationRow = {
   date: string; account_name: string; account_id: number; manager_name: string
   type: '充值' | '退款'; movement_type: 'recharge' | 'refund'
   account_currency: string; rebate_rate: string | null; cash_amount: string; watermark: string | null
+  reconciled: boolean; reconciliation_status: '已对账' | '未对账'
 }
 export type RechargeReconciliationReport = {
   rows: RechargeReconciliationRow[]
@@ -109,13 +110,13 @@ export type RechargeReconciliationReport = {
 export type ProfitReportRow = {
   date: string; project_name: string; operator_name: string | null
   reported_spend: string | null; conversions: number; reported_conversion_cost: string | null
-  account_spend: string; cash_spend: string; cash_conversion_cost: string | null; profit: string | null
+  account_spend: string; cash_spend: string | null; cash_conversion_cost: string | null; profit: string | null
 }
 export type ProfitReport = {
   rows: ProfitReportRow[]
   summary: {
     reported_spend: string | null; conversions: number; reported_conversion_cost: string | null
-    account_spend: string; cash_spend: string; cash_conversion_cost: string | null; profit: string | null
+    account_spend: string; cash_spend: string | null; cash_conversion_cost: string | null; profit: string | null
   }
   metric_mode: 'copy' | 'add'; operator_name: string | null; operator_names: string[]
   total: number; page: number; page_size: number; total_pages: number
@@ -461,7 +462,7 @@ export type OperationsCenter = {
     history: OperationsHistory
   }
   budget_append: {
-    interval_minutes: number; add_cost_limit: string; utilization_threshold: string
+    interval_minutes: number; cost_mode: 'add_cash' | 'copy_cash'; conversion_label: '加粉' | '复制'; cost_limit: string; add_cost_limit: string; utilization_threshold: string
     round_amounts: Array<{ round: number; amount: string }>
     candidate_count?: number | null; budget_snapshot_available: boolean
     budget_snapshot_status: 'ready' | 'partial' | 'stale' | 'missing'
@@ -470,10 +471,10 @@ export type OperationsCenter = {
     history: OperationsHistory
   }
   eliminations: {
-    total: number; page: number; page_size: number; total_pages: number
+    cost_mode: 'add_cash' | 'copy_cash'; conversion_label: '加粉' | '复制'; total: number; page: number; page_size: number; total_pages: number
     rows: Array<{
       id: string; eliminated_at?: string | null; account_id: number; account_name: string
-      spend: string; adds: number; add_cost?: string | null; recharge_account?: string | null
+      spend: string; adds: number; add_cost?: string | null; conversions: number; conversion_cost?: string | null; recharge_account?: string | null
       reason?: string | null
     }>
   }
@@ -484,7 +485,7 @@ export type OperationsHistory = {
   total: number; page: number; page_size: number; total_pages: number
   rows: Array<{
     id: string; created_at: string; account_id?: string | null; account_name: string
-    before_budget?: string | null; after_budget?: string | null; status: string
+    before_budget?: string | null; after_budget?: string | null; status: string; error?: string | null
     append_round?: number | null; append_amount?: string | null
   }>
 }
@@ -568,7 +569,7 @@ export type AccountManagement = {
   rows: AccountManagementRow[]; total: number; page: number; page_size: number; total_pages: number
 }
 export type StrategyRoundAmount = { round: number; amount: string }
-export type StrategyConfigValue = string | string[] | number | StrategyRoundAmount[]
+export type StrategyConfigValue = string | string[] | number | boolean | StrategyRoundAmount[] | Record<string, string | number | boolean>
 export type StrategyVersion = {
   id: string; version: number; status: 'draft' | 'published'; base_version_id?: string | null
   draft_revision: number; config: Record<string, StrategyConfigValue>
@@ -576,12 +577,12 @@ export type StrategyVersion = {
   created_at: string; published_at?: string | null
 }
 export type StrategyPolicy = {
-  key: 'budget_reset' | 'budget_append' | 'elimination' | 'keyword_tiers'
+  key: 'budget_reset' | 'budget_append' | 'elimination' | 'account_status' | 'cost_judgment' | 'realtime_closure' | 'keyword_tiers'
   revision: number; active: StrategyVersion; draft?: StrategyVersion | null
 }
 export type StrategyEvaluation = {
   id: string; config_hash: string; created_at: string
-  result: { candidate_count: number; evaluated_count?: number; sample_account_ids?: number[]; action: string }
+  result: { candidate_count: number; matched_count?: number; evaluated_count?: number; sample_account_ids?: number[]; action: string }
 }
 export type AdBuildPlanSettingItem = {
   campaign_name: string

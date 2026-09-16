@@ -21,10 +21,11 @@ function money(value: string | null | undefined) {
   return `¥ ${Number(value).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
-function RechargeTab({ project }: { project: Project }) {
+function RechargeTab({ project, canManage }: { project: Project; canManage: boolean }) {
   const [dateFrom, setDateFrom] = useState(today());
   const [dateTo, setDateTo] = useState(today());
   const [movement, setMovement] = useState<"" | "recharge" | "refund">("");
+  const [reconciliationStatus, setReconciliationStatus] = useState<"" | "reconciled" | "unreconciled">("");
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(1);
@@ -32,8 +33,10 @@ function RechargeTab({ project }: { project: Project }) {
   const [data, setData] = useState<RechargeReconciliationReport | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const load = async (requestedPage = page, patch: { from?: string; to?: string; movement?: string; search?: string; pageSize?: number } = {}) => {
+  const load = async (requestedPage = page, patch: { from?: string; to?: string; movement?: string; status?: string; search?: string; pageSize?: number } = {}) => {
     setBusy(true); setError(null);
     const params = new URLSearchParams({
       date_from: patch.from ?? dateFrom,
@@ -42,12 +45,14 @@ function RechargeTab({ project }: { project: Project }) {
       page_size: String(patch.pageSize ?? pageSize),
     });
     const requestedMovement = patch.movement ?? movement;
+    const requestedStatus = patch.status ?? reconciliationStatus;
     const requestedSearch = patch.search ?? search;
     if (requestedMovement) params.set("movement_type", requestedMovement);
+    if (requestedStatus) params.set("reconciliation_status", requestedStatus);
     if (requestedSearch) params.set("search", requestedSearch);
     try {
       setData(await apiGet<RechargeReconciliationReport>(`/projects/${project.id}/finance/recharge-reconciliation?${params}`));
-      setPage(requestedPage);
+      setPage(requestedPage); setSelected(new Set());
     } catch (reason) { setError(reason instanceof Error ? reason.message : "充值对账读取失败"); }
     finally { setBusy(false); }
   };
@@ -56,27 +61,62 @@ function RechargeTab({ project }: { project: Project }) {
   const selectMovement = (next: "" | "recharge" | "refund") => {
     setMovement(next); setPage(1); void load(1, { movement: next });
   };
+  const selectReconciliationStatus = (next: "" | "reconciled" | "unreconciled") => {
+    setReconciliationStatus(next); setPage(1); void load(1, { status: next });
+  };
   const submitSearch = () => {
     const next = searchInput.trim(); setSearch(next); setPage(1); void load(1, { search: next });
+  };
+  const rowKey = (row: RechargeReconciliationReport["rows"][number]) => `${row.date}|${row.account_id}|${row.movement_type}`;
+  const pageKeys = (data?.rows || []).map(rowKey);
+  const allPageSelected = pageKeys.length > 0 && pageKeys.every(key => selected.has(key));
+  const somePageSelected = pageKeys.some(key => selected.has(key));
+  const togglePage = (checked: boolean) => setSelected(current => {
+    const next = new Set(current);
+    pageKeys.forEach(key => checked ? next.add(key) : next.delete(key));
+    return next;
+  });
+  const toggleRow = (key: string, checked: boolean) => setSelected(current => {
+    const next = new Set(current);
+    checked ? next.add(key) : next.delete(key);
+    return next;
+  });
+  const updateReconciliation = async (reconciled: boolean) => {
+    const rows = (data?.rows || []).filter(row => selected.has(rowKey(row)));
+    if (!rows.length) return;
+    setBusy(true); setError(null); setNotice(null);
+    try {
+      await apiPatch(`/projects/${project.id}/finance/recharge-reconciliation`, {
+        reconciled,
+        rows: rows.map(row => ({ report_date: row.date, account_id: row.account_id, movement_type: row.movement_type })),
+      });
+      setNotice(`${reconciled ? "确认" : "取消"}对账成功，共处理 ${rows.length} 条记录`);
+      await load(page);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "对账状态更新失败"); }
+    finally { setBusy(false); }
   };
   return <section className="account-management-frame finance-workspace">
     <div className="account-management-view-controls"><div className="account-management-toolbar finance-toolbar">
       <DateFilterGroup valueFrom={dateFrom} valueTo={dateTo} disabled={busy} onChange={({ from, to }) => { setDateFrom(from); setDateTo(to); }} onApply={({ from, to }) => { setPage(1); void load(1, { from, to }); }} />
       <div className="finance-toolbar-actions">
+        {canManage && <div className="finance-reconcile-actions"><Button size="small" appearance="secondary" disabled={busy || selected.size === 0} onClick={() => void updateReconciliation(false)}>取消对账</Button><Button size="small" appearance="primary" disabled={busy || selected.size === 0} onClick={() => void updateReconciliation(true)}>确认对账</Button></div>}
         <div className="finance-segmented" role="group" aria-label="充值类型筛选">
           {([["", "全部"], ["recharge", "充值"], ["refund", "退款"]] as const).map(([value, label]) => <button key={label} type="button" className={movement === value ? "active" : ""} onClick={() => selectMovement(value)}>{label}</button>)}
+        </div>
+        <div className="finance-segmented" role="group" aria-label="对账状态筛选">
+          {([["", "全部"], ["reconciled", "已对账"], ["unreconciled", "未对账"]] as const).map(([value, label]) => <button key={label} type="button" className={reconciliationStatus === value ? "active" : ""} onClick={() => selectReconciliationStatus(value)}>{label}</button>)}
         </div>
         <SearchField ariaLabel="搜索充值对账" value={searchInput} placeholder="账户名称 / 账户ID / 管家" onChange={setSearchInput} onSearch={submitSearch} onClear={() => { setSearchInput(""); setSearch(""); void load(1, { search: "" }); }} disabled={busy} />
         <Button className="toolbar-refresh-button" size="small" appearance="secondary" aria-label="刷新" disabled={busy} onClick={() => void load(1)}>↻</Button>
       </div>
     </div></div>
-    {error && <PopupMessage intent="error">{error}</PopupMessage>}
+    {error && <PopupMessage intent="error">{error}</PopupMessage>}{notice && <PopupMessage intent="success">{notice}</PopupMessage>}
     <div className="account-management-table-wrap"><table className="account-management-table finance-table">
-      <thead><tr><th>日期</th><th>账户名称</th><th>类型</th><th className="table-cell--end">账户币求和</th><th className="table-cell--end">返点</th><th className="table-cell--end">现金求和</th></tr></thead>
+      <thead><tr><th className="finance-select-column table-cell--center"><input type="checkbox" disabled={!canManage || !pageKeys.length} checked={allPageSelected} ref={node => { if (node) node.indeterminate = somePageSelected && !allPageSelected; }} onChange={event => togglePage(event.target.checked)} aria-label="全选当前页充值对账记录" /></th><th>日期</th><th>账户名称</th><th>账户ID</th><th>类型</th><th className="table-cell--end">账户币求和</th><th className="table-cell--end">返点</th><th className="table-cell--end">现金求和</th><th className="table-cell--center">对账状态</th></tr></thead>
       <tbody>
-        <tr className="finance-summary-row"><td>汇总</td><td>当前筛选共 {data?.total ?? 0} 条</td><td>—</td><td className="number-cell">{money(data?.summary.account_currency)}</td><td className="number-cell">—</td><td className="number-cell">{money(data?.summary.cash_amount)}</td></tr>
-        {data?.rows.map(row => <tr key={`${row.date}-${row.account_id}-${row.movement_type}`}><td>{row.date}</td><td><strong>{row.account_name}</strong><small>{row.account_id}</small></td><td><span className={`finance-type finance-type--${row.movement_type}`}>{row.type}</span></td><td className="number-cell">{money(row.account_currency)}</td><td className="number-cell">{row.rebate_rate == null ? "—" : `${Number(row.rebate_rate)}%`}</td><td className="number-cell">{money(row.cash_amount)}</td></tr>)}
-        {!busy && !data?.rows.length && <tr><td className="account-management-empty" colSpan={6}>当前日期和筛选条件没有充值或退款流水</td></tr>}
+        <tr className="finance-summary-row"><td></td><td>汇总</td><td>当前筛选共 {data?.total ?? 0} 条</td><td>—</td><td>—</td><td className="number-cell">{money(data?.summary.account_currency)}</td><td className="number-cell">—</td><td className="number-cell">{money(data?.summary.cash_amount)}</td><td className="table-cell--center">—</td></tr>
+        {data?.rows.map(row => { const key = rowKey(row); return <tr key={key}><td className="table-cell--center"><input type="checkbox" disabled={!canManage} checked={selected.has(key)} onChange={event => toggleRow(key, event.target.checked)} aria-label={`选择 ${row.date} ${row.account_name} ${row.type}`} /></td><td>{row.date}</td><td><strong>{row.account_name}</strong></td><td>{row.account_id}</td><td><span className={`finance-type finance-type--${row.movement_type}`}>{row.type}</span></td><td className="number-cell">{money(row.account_currency)}</td><td className="number-cell">{row.rebate_rate == null ? "—" : `${Number(row.rebate_rate)}%`}</td><td className="number-cell">{money(row.cash_amount)}</td><td className="table-cell--center"><span className={`finance-reconciliation-status ${row.reconciled ? "is-reconciled" : "is-unreconciled"}`}>{row.reconciliation_status}</span></td></tr>; })}
+        {!busy && !data?.rows.length && <tr><td className="account-management-empty" colSpan={9}>当前日期和筛选条件没有充值或退款流水</td></tr>}
       </tbody>
     </table></div>
     <ViewportStickyPagination page={data?.page || page} totalPages={data?.total_pages || 1} total={data?.total || 0} pageSize={data?.page_size || pageSize} loading={busy} ariaLabel="充值对账分页" onPageChange={next => void load(next)} onPageSizeChange={size => { setPageSize(size); void load(1, { pageSize: size }); }} />
@@ -156,6 +196,6 @@ export function FinanceReportsPage({ project, canManage }: { project: Project; c
   return <>
     <PageHeader title="财务报表" description="充值退款对账与项目利润核算" />
     <div className="finance-tabs" role="tablist" aria-label="财务报表页签"><button type="button" role="tab" aria-selected={tab === "recharge"} className={tab === "recharge" ? "active" : ""} onClick={() => setTab("recharge")}>充值对账</button><button type="button" role="tab" aria-selected={tab === "profit"} className={tab === "profit" ? "active" : ""} onClick={() => setTab("profit")}>利润报表</button></div>
-    {tab === "recharge" ? <RechargeTab project={project} /> : <ProfitTab project={project} canManage={canManage} />}
+    {tab === "recharge" ? <RechargeTab project={project} canManage={canManage} /> : <ProfitTab project={project} canManage={canManage} />}
   </>;
 }

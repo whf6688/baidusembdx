@@ -12,6 +12,7 @@ from search_console.ad_builds import (
     account_workflow_steps,
     build_ad_build_preview,
     build_keyword_tracking_url,
+    build_ocpc_project_name,
     build_plan_pause_schedule,
     build_plan_pause_schedule_from_windows,
     keyword_uploaded_adgroup_ids,
@@ -30,6 +31,21 @@ from search_console.schemas import AdBuildPreviewRequest
 
 NOW = datetime(2026, 7, 14, 1, 0, tzinfo=UTC)
 PROJECT_ID = uuid.uuid4()
+
+
+def test_ocpc_project_name_uses_managed_project_name_and_beijing_execution_time():
+    assert build_ocpc_project_name(
+        "减肥搜索",
+        datetime(2026, 9, 16, 7, 30, tzinfo=UTC),
+    ) == "减肥搜索_0916_15"
+
+
+def test_ocpc_project_name_rejects_names_that_exceed_baidu_limit():
+    with pytest.raises(ValueError, match="最多 12 个字符"):
+        build_ocpc_project_name(
+            "这是一个超过十二个字符的项目名称",
+            datetime(2026, 9, 16, 7, 30, tzinfo=UTC),
+        )
 
 
 def test_keyword_upload_fills_ten_thousand_across_unit_boundaries():

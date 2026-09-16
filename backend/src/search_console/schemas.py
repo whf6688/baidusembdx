@@ -90,6 +90,24 @@ class FinanceProfitInputItem(BaseModel):
     reported_spend: Decimal = Field(ge=Decimal("0"), le=Decimal("999999999.99"), decimal_places=2)
 
 
+class FinanceReconciliationItem(BaseModel):
+    report_date: date
+    account_id: int = Field(gt=0)
+    movement_type: Literal["recharge", "refund"]
+
+
+class FinanceReconciliationUpdate(BaseModel):
+    reconciled: bool
+    rows: list[FinanceReconciliationItem] = Field(min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def unique_reconciliation_rows(self):
+        keys = [(row.report_date, row.account_id, row.movement_type) for row in self.rows]
+        if len(keys) != len(set(keys)):
+            raise ValueError("对账记录不能重复提交")
+        return self
+
+
 class FinanceProfitUpdate(BaseModel):
     operator_name: str | None = Field(default=None, max_length=30)
     rows: list[FinanceProfitInputItem] = Field(min_length=1, max_length=366)

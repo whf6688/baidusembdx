@@ -17,6 +17,14 @@ type Props = {
 const runtimeStatusColor = (status: RuntimeJobHealth['status']) =>
   status === 'normal' ? 'success' : status === 'error' ? 'danger' : status === 'running' ? 'warning' : 'subtle'
 
+const realtimeClosureSteps = [
+  ['01', '百度日报同步', '读取在用账户消费'],
+  ['02', '好多粉同步', '读取访客、复制与加粉'],
+  ['03', '账户预算与余额', '回读预算、余额及类型；低余额提醒'],
+  ['04', '创意审核', '检查拒审并按规则重建'],
+  ['05', '账户归因', '账户与关键词保持唯一匹配'],
+] as const
+
 function RuntimeSafetyWidget({ writesEnabled }: { writesEnabled: boolean }) {
   const [health, setHealth] = useState<RuntimeJobsHealth | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -62,17 +70,28 @@ function RuntimeSafetyWidget({ writesEnabled }: { writesEnabled: boolean }) {
     <div className={`runtime-health-message ${writesEnabled ? 'is-normal' : 'is-protected'}`}>
       <span>{writesEnabled ? '百度写入已开启，目标账户校验、限频、审计与幂等保护持续生效' : '当前处于只读保护，刷新任务不会执行百度写操作'}</span>
     </div>
-    <div className="runtime-job-column">
-      <div className="runtime-job-list-title">后台常驻列表</div>
-      <div className="runtime-job-list">
-        {health?.jobs.map(job => <div className={`runtime-job-row is-${job.status}`} key={job.key}>
-          <div className="runtime-job-main"><strong>{job.label}</strong><span title={job.detail}>{job.detail}</span></div>
-          <div className="runtime-job-side">
-            <Badge appearance="tint" color={runtimeStatusColor(job.status)}>{job.status_text}</Badge>
-            <Button size="small" appearance="secondary" disabled={!job.can_refresh || busyKey === job.key} onClick={() => void refresh(job)}>{busyKey === job.key ? '提交中…' : '刷新'}</Button>
-          </div>
-        </div>)}
-        {!health && !error && <div className="runtime-job-empty">正在读取运行状态…</div>}
+    <div className="runtime-health-body">
+      <div className="runtime-job-column">
+        <div className="runtime-job-list-title">后台常驻列表</div>
+        <div className="runtime-job-list">
+          {health?.jobs.map(job => <div className={`runtime-job-row is-${job.status}`} key={job.key}>
+            <div className="runtime-job-main"><strong>{job.label}</strong><span title={job.detail}>{job.detail}</span></div>
+            <div className="runtime-job-side">
+              <Badge appearance="tint" color={runtimeStatusColor(job.status)}>{job.status_text}</Badge>
+              <Button size="small" appearance="secondary" disabled={!job.can_refresh || busyKey === job.key} onClick={() => void refresh(job)}>{busyKey === job.key ? '提交中…' : '刷新'}</Button>
+            </div>
+          </div>)}
+          {!health && !error && <div className="runtime-job-empty">正在读取运行状态…</div>}
+        </div>
+      </div>
+      <div className="runtime-closure-column">
+        <div className="runtime-job-list-title">实时闭环</div>
+        <div className="runtime-closure-list">
+          {realtimeClosureSteps.map(([index, title, description]) => <div className="runtime-closure-step" key={index}>
+            <span>{index}</span>
+            <div><strong>{title}</strong><small>{description}</small></div>
+          </div>)}
+        </div>
       </div>
     </div>
     {error && <PopupMessage intent="error">{error}</PopupMessage>}

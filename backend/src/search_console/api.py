@@ -26,10 +26,13 @@ from .code_sync import (
 from .account_lifecycle import (
     EMPTY,
     TESTING,
+    elimination_reason,
 )
 from .account_judgment import (
     ACCOUNT_JUDGMENT_PREFERENCE_KEY,
-    COST_STATUS_COLD_START,
+    ACCOUNT_STATUS_ALL_PAUSED,
+    ACCOUNT_STATUS_BUDGET_LOW,
+    ACCOUNT_STATUS_ONLINE,
     IN_USE_ACCOUNT_STATUSES,
     account_status_expression,
     cost_judgment_expressions,
@@ -52,6 +55,7 @@ from .ad_builds import (
     account_workflow_overrides,
     account_workflow_steps,
     build_ad_build_preview,
+    build_ocpc_project_name,
     build_plan_pause_schedule,
     build_plan_pause_schedule_from_windows,
 )
@@ -162,6 +166,7 @@ from .schemas import (
     KeywordTierDryRunRequest,
     KeywordTierRuleConfig,
     FinanceProfitUpdate,
+    FinanceReconciliationUpdate,
     ManagerCreate,
     ManagerSettingsUpdate,
     ManualKeywordBlacklistCreate,
@@ -207,6 +212,7 @@ from .permissions import (
     DEFAULT_MEMBER_PERMISSIONS,
     MODULES,
     access_payload,
+    ad_build_operator_names,
     get_project_member,
     is_system_owner,
     normalize_permissions,
@@ -218,6 +224,7 @@ from .finance_reports import (
     profit_report,
     recharge_reconciliation_report,
     save_profit_inputs,
+    set_reconciliation_status,
 )
 from .services import confirm_operation, dashboard_summary, preflight_operation
 from .strategies import (
@@ -980,7 +987,7 @@ def get_account_workspace(
     remote_statuses: str | None = Query(default=None, max_length=100),
     account_names: str | None = Query(default=None, max_length=10000),
     search: str | None = Query(default=None, max_length=100),
-    sort_by: str = Query(default="spend", pattern="^(status|account_status|account_id|account_name|subject|lifecycle|cost_status|operator|manager|account_type|page_type|impressions|clicks|spend|adds|copies|cpm|ctr|add_cost|copy_cost|cash_add_cost|cash_copy_cost|budget|balance|updated_at)$"),
+    sort_by: str = Query(default="default", pattern="^(default|status|account_status|account_id|account_name|subject|lifecycle|cost_status|operator|manager|account_type|page_type|impressions|clicks|spend|adds|copies|cpm|ctr|add_cost|copy_cost|cash_add_cost|cash_copy_cost|budget|balance|updated_at)$"),
     sort_order: str = Query(default="desc", pattern="^(asc|desc)$"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=20, le=100),
@@ -1149,8 +1156,7 @@ def create_project_member(
     actor: Actor = Depends(current_actor),
 ):
     require_project(db, project_id)
-    if not is_system_owner(actor):
-        raise HTTPException(status_code=403, detail="只有系统管理员可以配置成员权限")
+    require_project_permission(db, project_id, actor, "member_management", "manage")
     if payload.username == system_owner_username():
         raise HTTPException(status_code=409, detail="该登录账号属于固定系统管理员")
     if get_project_member(db, project_id, payload.username, active_only=False):
@@ -1257,8 +1263,7 @@ def update_project_member(
     actor: Actor = Depends(current_actor),
 ):
     require_project(db, project_id)
-    if not is_system_owner(actor):
-        raise HTTPException(status_code=403, detail="只有系统管理员可以配置成员权限")
+    require_project_permission(db, project_id, actor, "member_management", "manage")
     row = db.get(ProjectAdBuildAccess, member_id)
     if not row or row.project_id != project_id:
         raise HTTPException(status_code=404, detail="成员不存在")
@@ -2574,6 +2579,10 @@ def task_result_summary(task: BackgroundTask) -> str:
         ("deleted", "已删除"),
         ("replenished", "已补充"),
         ("checked", "已检查"),
+        ("matched_account_count", "命中账户"),
+        ("paused_account_count", "已暂停账户"),
+        ("paused_campaign_count", "已暂停计划"),
+        ("skipped_count", "已跳过"),
         ("failed_count", "失败"),
     )
     metrics: list[str] = []
@@ -4213,7 +4222,8 @@ def create_ad_build_preview(
     db: Session,
     actor: Actor,
 ) -> tuple[dict, dict[int, Account]]:
-    if not db.get(Project, payload.project_id):
+    project = db.get(Project, payload.project_id)
+    if not project:
         raise HTTPException(status_code=404, detail="项目不存在")
     unknown_region_ids = sorted(set(payload.region_target) - baidu_region_ids())
     if unknown_region_ids:
@@ -4229,7 +4239,7 @@ def create_ad_build_preview(
     permission_access = require_project_permission(
         db, payload.project_id, actor, "auto_launch", "manage"
     )
-    operator_names = permission_access.operator_names
+    operator_names = ad_build_operator_names(permission_access)
     operator_scope = "、".join(operator_names) if operator_names is not None else None
     if operator_names is not None and payload.selection_mode == "specified_accounts":
         normalized = {value.strip() for value in payload.account_selectors if value.strip()}
@@ -4289,6 +4299,14 @@ def create_ad_build_preview(
         material_summary=material_summary,
         account_statuses=account_statuses,
     )
+    try:
+        plan["ocpc_project_names"] = [
+            build_ocpc_project_name(project.name, batch["scheduled_at"])
+            for batch in plan["batches"]
+        ]
+    except ValueError as exc:
+        plan["errors"] = list(dict.fromkeys([*plan["errors"], str(exc)]))
+        plan["can_submit"] = False
     plan["material_snapshot"] = material_snapshot
     plan["build_rule"] = ad_build_rule_summary()
     negative_keywords = project_negative_keyword_snapshot(db, payload.project_id)
@@ -4338,13 +4356,14 @@ def get_my_ad_build_access(
 ):
     require_project(db, project_id)
     access = project_access(db, project_id, actor)
+    build_operator_names = ad_build_operator_names(access)
     member = access.member
     account_filters = [Account.project_id == project_id]
-    if access.operator_names is not None:
-        account_filters.append(Account.operator_name.in_(access.operator_names))
+    if build_operator_names is not None:
+        account_filters.append(Account.operator_name.in_(build_operator_names))
     operator_scope = (
-        "、".join(access.operator_names)
-        if access.operator_names is not None
+        "、".join(build_operator_names)
+        if build_operator_names is not None
         else None
     )
     return envelope(request, {
@@ -4357,14 +4376,14 @@ def get_my_ad_build_access(
         # Keep operator_name for the legacy UI while exposing the full scope.
         "operator_name": operator_scope,
         "operator_names": (
-            list(access.operator_names)
-            if access.operator_names is not None
+            list(build_operator_names)
+            if build_operator_names is not None
             else None
         ),
         "data_scope": access.data_scope,
         "can_build_ads": access.permissions["auto_launch"] == "manage",
         "is_active": True if member is None else member.is_active,
-        "restricted": access.operator_names is not None,
+        "restricted": build_operator_names is not None,
         "eligible_account_count": db.scalar(
             select(func.count()).select_from(Account).where(*account_filters)
         ) or 0,
@@ -4775,6 +4794,7 @@ def create_ad_build(
     actor: Actor = Depends(require_roles(Role.ADMIN, Role.OPERATOR)),
 ):
     plan, account_map = create_ad_build_preview(payload, db, actor)
+    project = require_project(db, payload.project_id)
     if payload.selection_fingerprint != plan["selection_fingerprint"] or payload.selected_account_ids != plan["selected_account_ids"]:
         raise HTTPException(status_code=409, detail="账户队列已变化，请重新预览后再提交")
     if payload.material_fingerprint != plan["material_fingerprint"]:
@@ -4810,6 +4830,8 @@ def create_ad_build(
         account_count=plan["selected_count"],
         batch_count=plan["batch_count"],
         selection_config={
+            "project_name": project.name,
+            "ocpc_project_name_rule": "项目名称_MMDD_HH",
             "keyword_mode": payload.keyword_mode,
             "material_fingerprint": plan["material_fingerprint"],
             "material_snapshot": plan["material_snapshot"],
@@ -4876,6 +4898,10 @@ def create_ad_build(
     creative_segments, existing_combinations, creative_blacklisted_hashes = load_creative_pool(db, payload.project_id)
     combination_map = {row.combination_hash: row for row in existing_combinations}
     for batch_plan in plan["batches"]:
+        try:
+            ocpc_project_name = build_ocpc_project_name(project.name, batch_plan["scheduled_at"])
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         batch = AdBuildBatch(
             job_id=job.id,
             batch_number=batch_plan["number"],
@@ -4934,6 +4960,8 @@ def create_ad_build(
                     "execution_batch_number": batch.batch_number,
                     "keyword_batch_number": 1,
                     "scheduled_at": batch.scheduled_at.isoformat(),
+                    "ocpc_project_name": ocpc_project_name,
+                    "ocpc_project_name_rule": "项目名称_MMDD_HH",
                     "workflow_version": WORKFLOW_VERSION,
                     "workflow": account_workflow_steps(account),
                     "selection_mode": payload.selection_mode,
@@ -6074,6 +6102,7 @@ def get_recharge_reconciliation(
     date_from: date | None = None,
     date_to: date | None = None,
     movement_type: str | None = Query(default=None, pattern="^(recharge|refund)$"),
+    reconciliation_status: str | None = Query(default=None, pattern="^(reconciled|unreconciled)$"),
     search: str | None = Query(default=None, max_length=200),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=20, ge=10, le=100),
@@ -6089,10 +6118,52 @@ def get_recharge_reconciliation(
         date_from=selected_from,
         date_to=selected_to,
         movement_type=movement_type,
+        reconciliation_status=reconciliation_status,
         search=search,
         page=page,
         page_size=page_size,
     ))
+
+
+@router.patch("/projects/{project_id}/finance/recharge-reconciliation")
+def update_recharge_reconciliation(
+    project_id: uuid.UUID,
+    payload: FinanceReconciliationUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    actor: Actor = Depends(current_actor),
+):
+    require_project(db, project_id)
+    require_project_permission(db, project_id, actor, "finance_reports", "manage")
+    result = set_reconciliation_status(
+        db,
+        project_id,
+        rows=payload.rows,
+        reconciled=payload.reconciled,
+        actor=actor.username,
+    )
+    db.add(AuditEvent(
+        project_id=project_id,
+        actor=actor.username,
+        action="finance.reconciliation.confirm" if payload.reconciled else "finance.reconciliation.cancel",
+        target_type="finance_reconciliation",
+        target_id=str(result["updated"]),
+        summary=f"{'确认' if payload.reconciled else '取消'}对账 {result['updated']} 条",
+        details={
+            "reconciled": payload.reconciled,
+            "rows": [
+                {
+                    "date": row.report_date.isoformat(),
+                    "account_id": row.account_id,
+                    "movement_type": row.movement_type,
+                }
+                for row in payload.rows
+            ],
+            **result,
+        },
+    ))
+    db.commit()
+    return envelope(request, result)
 
 
 @router.get("/projects/{project_id}/finance/profit")
@@ -6911,10 +6982,28 @@ def _strategy_policy(db: Session, project_id: uuid.UUID, strategy_key: str) -> S
 
 
 def _strategy_dry_run_result(db: Session, project_id: uuid.UUID, strategy_key: str, config: dict) -> dict:
+    if strategy_key in {"account_status", "cost_judgment", "realtime_closure"}:
+        account_count = int(db.scalar(select(func.count(Account.id)).where(
+            Account.project_id == project_id,
+            Account.is_active.is_(True),
+        )) or 0)
+        action = {
+            "account_status": "发布账户状态统一判定规则",
+            "cost_judgment": "发布加粉/复制现金成本判定标准",
+            "realtime_closure": "发布项目刷新与实时闭环规则",
+        }[strategy_key]
+        return {
+            "candidate_count": account_count,
+            "evaluated_count": account_count,
+            "sample_account_ids": [],
+            "action": action,
+        }
     facts = judgment_facts(db, project_id)
     judgment_preference = load_account_judgment_preference(db, project_id)
+    judgment_mode = judgment_preference["mode"]
+    judgment_rules = judgment_preference[judgment_mode]
+    conversion_name = "复制" if judgment_mode == "copy_cash" else "加粉"
     account_status = account_status_expression(facts)
-    cost_status = cost_judgment_expressions(facts, judgment_preference)["status"]
     def judgment_query(statement):
         return (
             statement
@@ -6928,33 +7017,42 @@ def _strategy_dry_run_result(db: Session, project_id: uuid.UUID, strategy_key: s
     ]
     if strategy_key == "budget_reset":
         target = Decimal(config["target_budget"])
-        now = datetime.now(UTC)
+        minimum_difference = Decimal(str(config.get("minimum_difference", "0.01")))
         accounts = db.scalars(judgment_query(select(Account)).where(
             *base_filters,
-            cost_status == COST_STATUS_COLD_START,
+            account_status.in_((
+                ACCOUNT_STATUS_ALL_PAUSED,
+                ACCOUNT_STATUS_BUDGET_LOW,
+                ACCOUNT_STATUS_ONLINE,
+            )),
             Account.current_budget.is_not(None),
-            Account.budget_snapshot_at.is_not(None),
         )).all()
         items = [
             item
             for item in accounts
-            if snapshot_is_fresh(item.budget_snapshot_at, now=now)
-            and needs_budget_reset(item.current_budget, target_budget=target)
+            if needs_budget_reset(
+                item.current_budget,
+                target_budget=target,
+                minimum_difference=minimum_difference,
+            )
         ]
-        return {"candidate_count": len(items), "sample_account_ids": [item.baidu_account_id for item in items[:20]], "action": f"重置为 {target} 元"}
+        return {"candidate_count": len(items), "sample_account_ids": [item.baidu_account_id for item in items[:20]], "action": f"到点将日预算重置为 {target} 账户币"}
     if strategy_key == "budget_append":
         today = datetime.now(ZoneInfo("Asia/Shanghai")).date()
         metrics = {
-            account_id: (Decimal(spend or 0), int(adds or 0))
-            for account_id, spend, adds in db.execute(
-                select(PerformanceDaily.account_id, func.sum(PerformanceDaily.spend), func.sum(PerformanceDaily.adds))
+            account_id: (Decimal(spend or 0), int(adds or 0), int(copies or 0))
+            for account_id, spend, adds, copies in db.execute(
+                select(PerformanceDaily.account_id, func.sum(PerformanceDaily.spend), func.sum(PerformanceDaily.adds), func.sum(PerformanceDaily.copies))
                 .where(PerformanceDaily.report_date == today).group_by(PerformanceDaily.account_id)
             ).all()
         }
-        accounts = db.scalars(judgment_query(select(Account)).where(*base_filters, cost_status == COST_STATUS_COLD_START, Account.current_budget.is_not(None))).all()
+        accounts = db.scalars(judgment_query(select(Account)).where(*base_filters, Account.current_budget.is_not(None))).all()
         items = [item for item in accounts if is_budget_append_candidate(
-            spend=metrics.get(item.id, (Decimal(0), 0))[0], adds=metrics.get(item.id, (Decimal(0), 0))[1],
-            current_budget=item.current_budget, add_cost_limit=Decimal(config["add_cost_limit"]),
+            spend=metrics.get(item.id, (Decimal(0), 0, 0))[0],
+            conversions=metrics.get(item.id, (Decimal(0), 0, 0))[2 if judgment_mode == "copy_cash" else 1],
+            cash_spend=calculate_cash_spend(metrics.get(item.id, (Decimal(0), 0, 0))[0], Decimal(item.rebate_rate) if item.rebate_rate is not None else None),
+            require_cash_spend=True,
+            current_budget=item.current_budget, cost_limit=Decimal(judgment_rules["cost_limit"]),
             utilization_limit=Decimal(config["utilization_limit"]),
         )]
         round_amounts = normalize_budget_append_round_amounts(config)
@@ -6964,18 +7062,41 @@ def _strategy_dry_run_result(db: Session, project_id: uuid.UUID, strategy_key: s
             if len(unique_amounts) == 1
             else "按第 1 至第 10 轮固定金额追加"
         )
-        return {"candidate_count": len(items), "sample_account_ids": [item.baidu_account_id for item in items[:20]], "action": action}
+        return {"candidate_count": len(items), "sample_account_ids": [item.baidu_account_id for item in items[:20]], "action": f"按{conversion_name}现金成本标准；{action}"}
     if strategy_key == "elimination":
-        eligible_account_ids = judgment_query(select(Account.id)).where(*base_filters)
+        eligible_account_ids = judgment_query(select(Account.id)).where(
+            *base_filters,
+            func.coalesce(facts.campaign_facts.c.plan_count, 0)
+            > func.coalesce(facts.campaign_facts.c.paused_plan_count, 0),
+        )
         rows = db.execute(
-            select(Account.baidu_account_id, func.coalesce(func.sum(PerformanceDaily.spend), 0), func.coalesce(func.sum(PerformanceDaily.adds), 0))
+            select(Account.baidu_account_id, Account.rebate_rate, func.coalesce(func.sum(PerformanceDaily.spend), 0), func.coalesce(func.sum(PerformanceDaily.adds), 0), func.coalesce(func.sum(PerformanceDaily.copies), 0))
             .outerjoin(PerformanceDaily, PerformanceDaily.account_id == Account.id)
-            .where(Account.id.in_(eligible_account_ids)).group_by(Account.id, Account.baidu_account_id).order_by(Account.baidu_account_id)
+            .where(Account.id.in_(eligible_account_ids)).group_by(Account.id, Account.baidu_account_id, Account.rebate_rate).order_by(Account.baidu_account_id)
         ).all()
-        spend_limit = Decimal(config["spend_without_add_limit"])
-        cost_limit = Decimal(config["add_cost_limit"])
-        candidates = [account_id for account_id, spend, adds in rows if (int(adds or 0) == 0 and Decimal(spend or 0) > spend_limit) or (int(adds or 0) > 0 and Decimal(spend or 0) / int(adds) > cost_limit)]
-        return {"candidate_count": len(candidates), "sample_account_ids": candidates[:20], "action": "进入现有淘汰执行与回读流程"}
+        spend_limit = Decimal(judgment_rules["cold_start_spend_limit"])
+        cost_limit = Decimal(judgment_rules["cost_limit"])
+        matched_accounts = []
+        for account_id, rebate_rate, spend, adds, copies in rows:
+            spend_value = Decimal(spend or 0)
+            conversions = int(copies or 0) if judgment_mode == "copy_cash" else int(adds or 0)
+            reason = elimination_reason(
+                spend_value,
+                conversions,
+                spend_without_add_limit=spend_limit,
+                add_cost_limit=cost_limit,
+                cash_spend=calculate_cash_spend(spend_value, Decimal(rebate_rate) if rebate_rate is not None else None),
+                require_cash_spend=True,
+                conversion_label=conversion_name,
+            )
+            if reason:
+                matched_accounts.append(account_id)
+        return {
+            "candidate_count": len(matched_accounts),
+            "matched_count": len(matched_accounts),
+            "sample_account_ids": matched_accounts[:20],
+            "action": f"按{conversion_name}现金成本标准，命中后直接暂停账户全部计划",
+        }
     rules = KeywordTierRuleConfig.model_validate(config)
     performance_scope = keyword_tier_performance_scope(project_id)
     rows = db.execute(
@@ -7073,6 +7194,27 @@ def publish_project_strategy(project_id: uuid.UUID, strategy_key: str, payload: 
     policy.revision += 1
     if strategy_key == KEYWORD_TIER_PREFERENCE_KEY:
         _upsert_keyword_tier_preference(db, project_id, draft.config, actor.username)
+    if strategy_key in {"cost_judgment", "realtime_closure"}:
+        preference_key = (
+            ACCOUNT_JUDGMENT_PREFERENCE_KEY
+            if strategy_key == "cost_judgment"
+            else "settings"
+        )
+        preference = db.scalar(select(ProjectPreference).where(
+            ProjectPreference.project_id == project_id,
+            ProjectPreference.key == preference_key,
+        ))
+        if preference:
+            preference.value = draft.config
+            preference.updated_by = actor.username
+            flag_modified(preference, "value")
+        else:
+            db.add(ProjectPreference(
+                project_id=project_id,
+                key=preference_key,
+                value=draft.config,
+                updated_by=actor.username,
+            ))
     add_audit(db, project_id, actor, "strategy.publish", "strategy_policy", "发布策略版本", str(policy.id), {"strategy_key": strategy_key, "version": draft.version_number, "config_hash": draft.config_hash})
     db.commit()
     db.refresh(policy)
@@ -7378,6 +7520,7 @@ def project_operations_center(
         db, project_id, "budget_reset",
     ).config or DEFAULT_STRATEGY_CONFIGS["budget_reset"]
     reset_target_budget = Decimal(str(reset_strategy_config["target_budget"]))
+    reset_minimum_difference = Decimal(str(reset_strategy_config.get("minimum_difference", "0.01")))
     reset_schedule_times = list(reset_strategy_config["schedule_times"])
     append_strategy_config = active_strategy_version(
         db, project_id, "budget_append",
@@ -7385,7 +7528,6 @@ def project_operations_center(
     append_round_amounts = normalize_budget_append_round_amounts(
         append_strategy_config,
     )
-    append_add_cost_limit = Decimal(str(append_strategy_config["add_cost_limit"]))
     append_utilization_limit = Decimal(str(append_strategy_config["utilization_limit"]))
     shanghai = ZoneInfo("Asia/Shanghai")
     today = datetime.now(shanghai).date()
@@ -7407,20 +7549,37 @@ def project_operations_center(
     loop_interval_minutes = max(15, min(1440, int(settings_value.get("report_refresh_minutes") or 60)))
     judgment_facts_value = judgment_facts(db, project_id)
     judgment_preference = load_account_judgment_preference(db, project_id)
+    judgment_mode = judgment_preference["mode"]
+    judgment_rules = judgment_preference[judgment_mode]
+    conversion_name = "复制" if judgment_mode == "copy_cash" else "加粉"
+    append_cost_limit = Decimal(str(judgment_rules["cost_limit"]))
     resolved_account_status = account_status_expression(judgment_facts_value)
-    resolved_cost_status = cost_judgment_expressions(judgment_facts_value, judgment_preference)["status"]
     test_accounts = db.scalars(select(Account)
         .outerjoin(judgment_facts_value.lifetime_metrics, judgment_facts_value.lifetime_metrics.c.account_id == Account.id)
         .outerjoin(judgment_facts_value.recent_metrics, judgment_facts_value.recent_metrics.c.account_id == Account.id)
         .outerjoin(judgment_facts_value.campaign_facts, judgment_facts_value.campaign_facts.c.account_id == Account.id)
         .where(
         Account.project_id == project_id,
-        resolved_account_status.in_(IN_USE_ACCOUNT_STATUSES),
-        resolved_cost_status == COST_STATUS_COLD_START,
+        resolved_account_status.in_((
+            ACCOUNT_STATUS_ALL_PAUSED,
+            ACCOUNT_STATUS_BUDGET_LOW,
+            ACCOUNT_STATUS_ONLINE,
+        )),
         Account.is_active.is_(True),
         Account.eliminated_at.is_(None),
     )).all()
     test_account_count = len(test_accounts)
+    append_accounts = db.scalars(select(Account)
+        .outerjoin(judgment_facts_value.lifetime_metrics, judgment_facts_value.lifetime_metrics.c.account_id == Account.id)
+        .outerjoin(judgment_facts_value.recent_metrics, judgment_facts_value.recent_metrics.c.account_id == Account.id)
+        .outerjoin(judgment_facts_value.campaign_facts, judgment_facts_value.campaign_facts.c.account_id == Account.id)
+        .where(
+        Account.project_id == project_id,
+        resolved_account_status.in_(IN_USE_ACCOUNT_STATUSES),
+        Account.is_active.is_(True),
+        Account.eliminated_at.is_(None),
+        Account.current_budget.is_not(None),
+    )).all()
 
     loop_sources = (
         "baidu_account_report",
@@ -7471,6 +7630,7 @@ def project_operations_center(
             PerformanceDaily.account_id.label("account_id"),
             func.coalesce(func.sum(PerformanceDaily.spend), 0).label("spend"),
             func.coalesce(func.sum(PerformanceDaily.adds), 0).label("adds"),
+            func.coalesce(func.sum(PerformanceDaily.copies), 0).label("copies"),
         )
         .group_by(PerformanceDaily.account_id)
         .subquery()
@@ -7490,6 +7650,7 @@ def project_operations_center(
             Account,
             func.coalesce(performance_totals.c.spend, 0),
             func.coalesce(performance_totals.c.adds, 0),
+            func.coalesce(performance_totals.c.copies, 0),
         )
         .outerjoin(performance_totals, performance_totals.c.account_id == Account.id)
         .where(*elimination_filters)
@@ -7498,9 +7659,12 @@ def project_operations_center(
         .limit(page_size)
     ).all()
     eliminated = []
-    for account, spend_value, adds_value in eliminated_rows:
+    for account, spend_value, adds_value, copies_value in eliminated_rows:
         spend = Decimal(spend_value or 0)
         adds = int(adds_value or 0)
+        copies = int(copies_value or 0)
+        conversions = copies if judgment_mode == "copy_cash" else adds
+        cash_spend = calculate_cash_spend(spend, Decimal(account.rebate_rate) if account.rebate_rate is not None else None)
         eliminated.append({
             "id": str(account.id),
             "eliminated_at": account.eliminated_at or account.lifecycle_evaluated_at,
@@ -7509,17 +7673,21 @@ def project_operations_center(
             "spend": spend,
             "adds": adds,
             "add_cost": safe_divide(spend, adds),
+            "conversions": conversions,
+            "conversion_cost": safe_divide(cash_spend, conversions) if cash_spend is not None else None,
             "recharge_account": account.recharge_account,
             "reason": account.elimination_reason,
         })
 
-    def budget_history(action: str) -> dict:
-        history_filters = (
+    def budget_history(action: str, *, failures_only: bool = False) -> dict:
+        history_filters = [
             AuditEvent.project_id == project_id,
             AuditEvent.action == action,
             AuditEvent.created_at >= range_start,
             AuditEvent.created_at < range_end,
-        )
+        ]
+        if failures_only:
+            history_filters.append(AuditEvent.details["status"].astext == "failed")
         total = int(db.scalar(select(func.count(AuditEvent.id)).where(*history_filters)) or 0)
         rows = db.scalars(
             select(AuditEvent)
@@ -7543,6 +7711,7 @@ def project_operations_center(
                 "append_round": row.details.get("append_round"),
                 "append_amount": row.details.get("append_amount"),
                 "status": row.details.get("status") or "succeeded",
+                "error": row.details.get("error") or row.details.get("error_type"),
             } for row in rows],
         }
 
@@ -7551,36 +7720,34 @@ def project_operations_center(
         if all(item["fresh"] for item in loop_watermarks.values())
         else "waiting_data"
     )
-    budget_snapshot = budget_snapshot_coverage(
-        (account.budget_snapshot_at for account in test_accounts),
+    budget_snapshot_available = True
+    budget_snapshot_status = "ready"
+    budget_snapshot_fresh_count = 0
+    budget_snapshot_missing_count = 0
+    append_budget_snapshot = budget_snapshot_coverage(
+        (account.budget_snapshot_at for account in append_accounts),
         now=now,
     )
-    # Automation safety depends on the current testing cohort, not on an
-    # unrelated account that may have failed in the wider project watermark.
-    budget_snapshot_available = bool(budget_snapshot["available"])
-    budget_snapshot_status = str(budget_snapshot["status"])
-    budget_snapshot_fresh_count = int(budget_snapshot["fresh_count"])
-    budget_snapshot_missing_count = int(budget_snapshot["missing_count"])
+    append_budget_snapshot_available = bool(append_budget_snapshot["available"])
     reset_candidate_count = (
         sum(
             1
             for account in test_accounts
-            if snapshot_is_fresh(account.budget_snapshot_at, now=now)
-            and needs_budget_reset(
+            if needs_budget_reset(
                 account.current_budget,
                 target_budget=reset_target_budget,
+                minimum_difference=reset_minimum_difference,
             )
         )
-        if budget_snapshot_available
-        else None
     )
     today_metrics = {
-        account_id: (Decimal(spend or 0), int(adds or 0))
-        for account_id, spend, adds in db.execute(
+        account_id: (Decimal(spend or 0), int(adds or 0), int(copies or 0))
+        for account_id, spend, adds, copies in db.execute(
             select(
                 PerformanceDaily.account_id,
                 func.coalesce(func.sum(PerformanceDaily.spend), 0),
                 func.coalesce(func.sum(PerformanceDaily.adds), 0),
+                func.coalesce(func.sum(PerformanceDaily.copies), 0),
             )
             .where(PerformanceDaily.report_date == today)
             .group_by(PerformanceDaily.account_id)
@@ -7589,16 +7756,18 @@ def project_operations_center(
     append_candidate_count = (
         sum(
             1
-            for account in test_accounts
+            for account in append_accounts
             if is_budget_append_candidate(
-                spend=today_metrics.get(account.id, (Decimal("0"), 0))[0],
-                adds=today_metrics.get(account.id, (Decimal("0"), 0))[1],
+                spend=today_metrics.get(account.id, (Decimal("0"), 0, 0))[0],
+                conversions=today_metrics.get(account.id, (Decimal("0"), 0, 0))[2 if judgment_mode == "copy_cash" else 1],
+                cash_spend=calculate_cash_spend(today_metrics.get(account.id, (Decimal("0"), 0, 0))[0], Decimal(account.rebate_rate) if account.rebate_rate is not None else None),
+                require_cash_spend=True,
                 current_budget=account.current_budget,
-                add_cost_limit=append_add_cost_limit,
+                cost_limit=append_cost_limit,
                 utilization_limit=append_utilization_limit,
             )
         )
-        if budget_snapshot_available
+        if append_budget_snapshot_available
         else None
     )
     return envelope(request, {
@@ -7615,7 +7784,7 @@ def project_operations_center(
         "budget_reset": {
             "schedule": reset_schedule_times[0],
             "target_budget": reset_target_budget,
-            "scope": "账户状态为在用且成本判断为冷启动期",
+            "scope": "账户状态为计划全停、预算不足或上线",
             "test_account_count": test_account_count,
             "candidate_count": reset_candidate_count,
             "budget_snapshot_available": budget_snapshot_available,
@@ -7624,23 +7793,28 @@ def project_operations_center(
             "budget_snapshot_missing_count": budget_snapshot_missing_count,
             "only_changed_accounts": True,
             "writes_enabled": settings.baidu_writes_enabled,
-            "history": budget_history("account.budget.reset"),
+            "history": budget_history("account.budget.reset", failures_only=True),
         },
         "budget_append": {
             "interval_minutes": 60,
-            "add_cost_limit": append_add_cost_limit,
+            "cost_mode": judgment_mode,
+            "conversion_label": conversion_name,
+            "cost_limit": append_cost_limit,
+            "add_cost_limit": append_cost_limit,
             "utilization_threshold": append_utilization_limit * Decimal("100"),
             "round_amounts": append_round_amounts,
             "candidate_count": append_candidate_count,
-            "budget_snapshot_available": budget_snapshot_available,
-            "budget_snapshot_status": budget_snapshot_status,
-            "budget_snapshot_fresh_count": budget_snapshot_fresh_count,
-            "budget_snapshot_missing_count": budget_snapshot_missing_count,
+            "budget_snapshot_available": append_budget_snapshot_available,
+            "budget_snapshot_status": str(append_budget_snapshot["status"]),
+            "budget_snapshot_fresh_count": int(append_budget_snapshot["fresh_count"]),
+            "budget_snapshot_missing_count": int(append_budget_snapshot["missing_count"]),
             "marginal_recheck": True,
             "writes_enabled": settings.baidu_writes_enabled,
             "history": budget_history("account.budget.append"),
         },
         "eliminations": {
+            "cost_mode": judgment_mode,
+            "conversion_label": conversion_name,
             "total": eliminated_total,
             "page": page,
             "page_size": page_size,
@@ -7667,17 +7841,12 @@ def project_dry_run(
     require_project(db, project_id)
     summary = dashboard_summary(db, project_id)
     data_stale = bool(summary.data_freshness.get("snapshot_stale"))
-    preference = db.scalar(select(ProjectPreference).where(
-        ProjectPreference.project_id == project_id,
-        ProjectPreference.key == "settings",
-    ))
-    guard_enabled = bool((preference.value if preference and isinstance(preference.value, dict) else {}).get("automation_guard", True))
-    protected = data_stale and guard_enabled
+    protected = data_stale
     result = {
         "rule_id": rule_id, "mode": "alert_only", "protected": protected,
         "data_quality": "stale" if data_stale else "fresh",
         "automatic_writes_allowed": not data_stale,
-        "matches": [], "reason": "数据水位不完整，保护闸阻止评估" if protected else (
+        "matches": [], "reason": "系统性数据水位异常，相关策略已暂停" if protected else (
             "数据水位不完整，本次仅试算且不会产生自动写入" if data_stale else "当前没有命中账户"
         ),
         "evaluated_at": datetime.now(UTC),

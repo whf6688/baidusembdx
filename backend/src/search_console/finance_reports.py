@@ -2,7 +2,7 @@ import uuid
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -39,6 +39,7 @@ def recharge_reconciliation_report(
     date_from: date,
     date_to: date,
     movement_type: str | None,
+    reconciliation_status: str | None,
     search: str | None,
     page: int,
     page_size: int,
@@ -55,6 +56,8 @@ def recharge_reconciliation_report(
             func.sum(FinancePaymentRecord.account_currency),
             func.sum(FinancePaymentRecord.cash_amount),
             func.max(FinancePaymentRecord.source_watermark),
+            func.count(FinancePaymentRecord.id),
+            func.count(FinancePaymentRecord.reconciled_at),
         )
         .join(Account, Account.id == FinancePaymentRecord.account_id)
         .join(AccountManager, AccountManager.id == FinancePaymentRecord.manager_id)
@@ -79,7 +82,25 @@ def recharge_reconciliation_report(
     needle = (search or "").strip().casefold()
     rows = []
     for row in values:
-        pay_date, account_name, account_id, manager_login, manager_name, rebate, movement, account_currency, cash_amount, watermark = row
+        (
+            pay_date,
+            account_name,
+            account_id,
+            manager_login,
+            manager_name,
+            rebate,
+            movement,
+            account_currency,
+            cash_amount,
+            watermark,
+            record_count,
+            reconciled_count,
+        ) = row
+        reconciled = int(record_count or 0) > 0 and int(record_count or 0) == int(reconciled_count or 0)
+        if reconciliation_status == "reconciled" and not reconciled:
+            continue
+        if reconciliation_status == "unreconciled" and reconciled:
+            continue
         haystack = " ".join((str(pay_date), account_name or "", str(account_id), manager_login or "", manager_name or "")).casefold()
         if needle and needle not in haystack:
             continue
@@ -93,6 +114,8 @@ def recharge_reconciliation_report(
             "account_currency": money(account_currency),
             "rebate_rate": money(rebate) if rebate is not None else None,
             "cash_amount": money(cash_amount),
+            "reconciled": reconciled,
+            "reconciliation_status": "已对账" if reconciled else "未对账",
             "watermark": watermark.isoformat() if watermark else None,
         })
     total = len(rows)
@@ -112,6 +135,49 @@ def recharge_reconciliation_report(
         "total_pages": max(1, (total + page_size - 1) // page_size),
         "watermark": max(watermarks) if watermarks else None,
     }
+
+
+def set_reconciliation_status(
+    db: Session,
+    project_id: uuid.UUID,
+    *,
+    rows: list,
+    reconciled: bool,
+    actor: str,
+) -> dict:
+    requested = {(row.report_date, row.account_id, row.movement_type) for row in rows}
+    account_ids = {account_id for _, account_id, _ in requested}
+    accounts = {
+        int(account.baidu_account_id): account.id
+        for account in db.scalars(select(Account).where(
+            Account.project_id == project_id,
+            Account.baidu_account_id.in_(account_ids),
+        )).all()
+    }
+    updated_records = 0
+    updated_groups = 0
+    for report_date, baidu_account_id, movement_type in requested:
+        account_pk = accounts.get(baidu_account_id)
+        if account_pk is None:
+            continue
+        result = db.execute(
+            update(FinancePaymentRecord)
+            .where(
+                FinancePaymentRecord.project_id == project_id,
+                FinancePaymentRecord.account_id == account_pk,
+                FinancePaymentRecord.pay_date == report_date,
+                FinancePaymentRecord.movement_type == movement_type,
+            )
+            .values(
+                reconciled_at=func.now() if reconciled else None,
+                reconciled_by=actor if reconciled else None,
+            )
+        )
+        affected = int(result.rowcount or 0)
+        if affected:
+            updated_groups += 1
+            updated_records += affected
+    return {"updated": updated_groups, "updated_records": updated_records, "reconciled": reconciled}
 
 
 def profit_report(
@@ -151,11 +217,13 @@ def profit_report(
         gross = Decimal(spend or 0)
         if gross <= 0:
             continue
-        item = daily.setdefault(report_date, {"account_spend": Decimal("0"), "cash_spend": Decimal("0"), "copies": 0, "adds": 0})
+        item = daily.setdefault(report_date, {"account_spend": Decimal("0"), "cash_spend": Decimal("0"), "cash_complete": True, "copies": 0, "adds": 0})
         item["account_spend"] += gross
         cash = calculate_cash_spend(gross, Decimal(rebate_rate) if rebate_rate is not None else None)
         if cash is not None:
             item["cash_spend"] += cash
+        else:
+            item["cash_complete"] = False
         item["copies"] += int(copies or 0)
         item["adds"] += int(adds or 0)
     input_rows = db.scalars(select(FinanceProfitInput).where(
@@ -174,7 +242,7 @@ def profit_report(
             continue
         reported_spend = inputs.get(report_date)
         conversions = int(values[conversion_key])
-        cash_spend = Decimal(values["cash_spend"])
+        cash_spend = Decimal(values["cash_spend"]) if values["cash_complete"] else None
         rows.append({
             "date": report_date.isoformat(),
             "project_name": project.name,
@@ -183,16 +251,17 @@ def profit_report(
             "conversions": conversions,
             "reported_conversion_cost": money(safe_divide(reported_spend, conversions)) if reported_spend is not None and conversions else None,
             "account_spend": money(values["account_spend"]),
-            "cash_spend": money(cash_spend),
-            "cash_conversion_cost": money(safe_divide(cash_spend, conversions)) if conversions else None,
-            "profit": money(reported_spend - cash_spend) if reported_spend is not None else None,
+            "cash_spend": money(cash_spend) if cash_spend is not None else None,
+            "cash_conversion_cost": money(safe_divide(cash_spend, conversions)) if cash_spend is not None and conversions else None,
+            "profit": money(reported_spend - cash_spend) if reported_spend is not None and cash_spend is not None else None,
         })
     total = len(rows)
     summary_reported_values = [Decimal(row["reported_spend"]) for row in rows if row["reported_spend"] is not None]
     summary_reported = sum(summary_reported_values, Decimal("0")) if summary_reported_values else None
     summary_conversions = sum(int(row["conversions"]) for row in rows)
     summary_account_spend = sum((Decimal(row["account_spend"]) for row in rows), Decimal("0"))
-    summary_cash_spend = sum((Decimal(row["cash_spend"]) for row in rows), Decimal("0"))
+    cash_values = [Decimal(row["cash_spend"]) for row in rows if row["cash_spend"] is not None]
+    summary_cash_spend = sum(cash_values, Decimal("0")) if len(cash_values) == len(rows) else None
     offset = (page - 1) * page_size
     operator_query = select(Account.operator_name).where(
         Account.project_id == project_id,
@@ -208,9 +277,9 @@ def profit_report(
             "conversions": summary_conversions,
             "reported_conversion_cost": money(safe_divide(summary_reported, summary_conversions)) if summary_reported is not None and summary_conversions else None,
             "account_spend": money(summary_account_spend),
-            "cash_spend": money(summary_cash_spend),
-            "cash_conversion_cost": money(safe_divide(summary_cash_spend, summary_conversions)) if summary_conversions else None,
-            "profit": money(summary_reported - summary_cash_spend) if summary_reported is not None else None,
+            "cash_spend": money(summary_cash_spend) if summary_cash_spend is not None else None,
+            "cash_conversion_cost": money(safe_divide(summary_cash_spend, summary_conversions)) if summary_cash_spend is not None and summary_conversions else None,
+            "profit": money(summary_reported - summary_cash_spend) if summary_reported is not None and summary_cash_spend is not None else None,
         },
         "metric_mode": "copy" if cost_mode == COST_MODE_COPY else "add",
         "operator_name": operator_name,
@@ -241,6 +310,8 @@ def save_profit_inputs(
             operator_scope=scope_key,
             reported_spend=row.reported_spend,
             updated_by=actor,
+            created_at=func.now(),
+            updated_at=func.now(),
         ).on_conflict_do_update(
             index_elements=["project_id", "report_date", "operator_scope"],
             set_={"reported_spend": row.reported_spend, "updated_by": actor, "updated_at": func.now()},

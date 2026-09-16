@@ -46,6 +46,12 @@ describe('ProjectManagementPage code sync tile', () => {
     render(<ProjectManagementPage projects={[]} onProjectChange={vi.fn()} projectUrl={() => '#'} writesEnabled canManageCodeSync />)
 
     expect(await screen.findByRole('heading', { name: '代码同步' })).toBeInTheDocument()
+    expect(screen.getByText('实时闭环')).toBeInTheDocument()
+    expect(screen.getByText('百度日报同步')).toBeInTheDocument()
+    expect(screen.getByText('好多粉同步')).toBeInTheDocument()
+    expect(screen.getByText('账户预算与余额')).toBeInTheDocument()
+    expect(screen.getByText('创意审核')).toBeInTheDocument()
+    expect(screen.getByText('账户归因')).toBeInTheDocument()
     expect(screen.getByText('main → origin/main')).toBeInTheDocument()
     expect(screen.getByText('没有需要同步的代码变更。')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: '立即同步' }))

@@ -40,10 +40,11 @@ from .account_lifecycle import (
     subject_accounts_are_all_eliminated,
 )
 from .account_judgment import (
-    COST_STATUS_COLD_START,
+    ACCOUNT_STATUS_ALL_PAUSED,
+    ACCOUNT_STATUS_BUDGET_LOW,
+    ACCOUNT_STATUS_ONLINE,
     IN_USE_ACCOUNT_STATUSES,
     account_status_expression,
-    cost_judgment_expressions,
     judgment_facts,
     load_account_judgment_preference,
 )
@@ -67,6 +68,8 @@ from .creatives import (
 from .budgets import (
     TARGET_DAILY_BUDGET,
     budget_snapshot_coverage,
+    budget_snapshot_scope_is_available,
+    budget_snapshot_skip_reason,
     is_budget_append_candidate,
     needs_budget_reset,
     snapshot_is_fresh,
@@ -88,6 +91,7 @@ from .models import (
     CreativeSegment,
     DailyDataStatus,
     FinancePaymentRecord,
+    HduofenAccountMapping,
     Operation,
     OperationStatus,
     PerformanceDaily,
@@ -102,9 +106,14 @@ from .models import (
     UnmatchedKeywordPerformanceDaily,
     Role,
 )
+from .metrics import calculate_cash_spend
 from .permissions import is_system_owner, require_account_scope, require_project_permission
 from .security import Actor
-from .strategies import active_strategy_version, budget_append_amount
+from .strategies import (
+    DEFAULT_EXECUTION_SETTINGS,
+    active_strategy_version,
+    budget_append_amount,
+)
 from .task_guard import ProjectScopeTask
 from .notifications import (
     create_low_balance_notifications,
@@ -499,7 +508,7 @@ def sync_project_budget_snapshot(task_id: str):
             snapshot_started_at=task.created_at,
         )
         db.commit()
-        if not failures and request_details.get("trigger") == "midnight_reset":
+        if request_details.get("trigger") == "midnight_reset":
             queue_budget_automation.delay(
                 "reset", str(task.project_id), request_details.get("strategy_version_id"),
                 request_details.get("schedule_run_id"),
@@ -566,7 +575,6 @@ def queue_due_budget_snapshot_syncs(
 BUDGET_AUTOMATION_SOURCES = (
     "baidu_account_report",
     "hduofen_capture",
-    "baidu_creative_review",
 )
 
 
@@ -586,16 +594,27 @@ def _watermarks_are_fresh(
     healthy = True
     for source in sources:
         row = by_source.get(source)
+        accepted_statuses = (
+            {"succeeded", "failed"}
+            if source == "baidu_account_report"
+            else {"succeeded"}
+        )
         fresh = bool(
             row
-            and row.status == "succeeded"
+            and row.status in accepted_statuses
             and snapshot_is_fresh(row.snapshot_at, now=now)
         )
         healthy = healthy and fresh
         details[source] = {
-            "status": row.status if row else "missing",
+            "status": (
+                "partial" if row and source == "baidu_account_report" and row.status == "failed"
+                else row.status if row else "missing"
+            ),
             "snapshot_at": row.snapshot_at.isoformat() if row and row.snapshot_at else None,
             "fresh": fresh,
+            "protection_scope": (
+                "account" if source == "baidu_account_report" else "project"
+            ),
         }
     return healthy, details
 
@@ -609,30 +628,41 @@ def _budget_automation_candidates(
     config: dict | None = None,
 ) -> list[tuple[Account, Decimal, dict]]:
     config = config or {}
+    if mode not in {"reset", "append"}:
+        raise ValueError("unsupported budget automation mode")
     facts = judgment_facts(db, project_id)
     judgment_preference = load_account_judgment_preference(db, project_id)
+    judgment_mode = judgment_preference["mode"]
+    judgment_rules = judgment_preference[judgment_mode]
+    conversion_name = "复制" if judgment_mode == "copy_cash" else "加粉"
     account_status = account_status_expression(facts)
-    cost_status = cost_judgment_expressions(facts, judgment_preference)["status"]
+    conditions = [
+        Account.project_id == project_id,
+        Account.is_active.is_(True),
+        account_status.in_(
+            (ACCOUNT_STATUS_ALL_PAUSED, ACCOUNT_STATUS_BUDGET_LOW, ACCOUNT_STATUS_ONLINE)
+            if mode == "reset"
+            else IN_USE_ACCOUNT_STATUSES
+        ),
+        api_eligible_account_condition(),
+        Account.current_budget.is_not(None),
+    ]
+    if mode == "append":
+        conditions.append(Account.budget_snapshot_at.is_not(None))
     accounts = db.scalars(select(Account)
         .outerjoin(facts.lifetime_metrics, facts.lifetime_metrics.c.account_id == Account.id)
         .outerjoin(facts.recent_metrics, facts.recent_metrics.c.account_id == Account.id)
         .outerjoin(facts.campaign_facts, facts.campaign_facts.c.account_id == Account.id)
-        .where(
-        Account.project_id == project_id,
-        Account.is_active.is_(True),
-        account_status.in_(IN_USE_ACCOUNT_STATUSES),
-        cost_status == COST_STATUS_COLD_START,
-        api_eligible_account_condition(),
-        Account.current_budget.is_not(None),
-        Account.budget_snapshot_at.is_not(None),
-    ).order_by(Account.baidu_account_id)).all()
-    accounts = [
-        account
-        for account in accounts
-        if snapshot_is_fresh(account.budget_snapshot_at, now=now)
-    ]
+        .where(*conditions).order_by(Account.baidu_account_id)).all()
+    if mode == "append":
+        accounts = [
+            account
+            for account in accounts
+            if snapshot_is_fresh(account.budget_snapshot_at, now=now)
+        ]
     if mode == "reset":
         target_budget = Decimal(str(config.get("target_budget", TARGET_DAILY_BUDGET)))
+        minimum_difference = Decimal(str(config.get("minimum_difference", "0.01")))
         return [
             (
                 account,
@@ -640,11 +670,12 @@ def _budget_automation_candidates(
                 {"current_budget": str(account.current_budget)},
             )
             for account in accounts
-            if needs_budget_reset(account.current_budget, target_budget=target_budget)
+            if needs_budget_reset(
+                account.current_budget,
+                target_budget=target_budget,
+                minimum_difference=minimum_difference,
+            )
         ]
-    if mode != "append":
-        raise ValueError("unsupported budget automation mode")
-
     report_date = now.astimezone(SHANGHAI).date()
     report_day_start = datetime.combine(
         report_date,
@@ -667,27 +698,35 @@ def _budget_automation_candidates(
         ).all()
     }
     metrics = {
-        account_id: (Decimal(spend or 0), int(adds or 0))
-        for account_id, spend, adds in db.execute(
+        account_id: (Decimal(spend or 0), int(adds or 0), int(copies or 0))
+        for account_id, spend, adds, copies in db.execute(
             select(
                 PerformanceDaily.account_id,
                 func.coalesce(func.sum(PerformanceDaily.spend), 0),
                 func.coalesce(func.sum(PerformanceDaily.adds), 0),
+                func.coalesce(func.sum(PerformanceDaily.copies), 0),
             )
             .where(PerformanceDaily.report_date == report_date)
             .group_by(PerformanceDaily.account_id)
         ).all()
     }
     candidates: list[tuple[Account, Decimal, dict]] = []
-    add_cost_limit = Decimal(str(config.get("add_cost_limit", "100")))
+    cost_limit = Decimal(str(judgment_rules["cost_limit"]))
     utilization_limit = Decimal(str(config.get("utilization_limit", "0.80")))
     for account in accounts:
-        spend, adds = metrics.get(account.id, (Decimal("0"), 0))
+        spend, adds, copies = metrics.get(account.id, (Decimal("0"), 0, 0))
+        conversions = copies if judgment_mode == "copy_cash" else adds
+        cash_spend = calculate_cash_spend(
+            spend,
+            Decimal(account.rebate_rate) if account.rebate_rate is not None else None,
+        )
         if not is_budget_append_candidate(
             spend=spend,
-            adds=adds,
+            conversions=conversions,
+            cash_spend=cash_spend,
+            require_cash_spend=True,
             current_budget=account.current_budget,
-            add_cost_limit=add_cost_limit,
+            cost_limit=cost_limit,
             utilization_limit=utilization_limit,
         ):
             continue
@@ -698,8 +737,10 @@ def _budget_automation_candidates(
             Decimal(account.current_budget) + append_amount,
             {
                 "spend": str(spend),
-                "adds": adds,
-                "add_cost": str(spend / Decimal(adds)),
+                "cost_mode": judgment_mode,
+                "conversion_name": conversion_name,
+                "conversions": conversions,
+                "cash_conversion_cost": str(cash_spend / Decimal(conversions)),
                 "budget_utilization": str(spend / Decimal(account.current_budget)),
                 "append_round": append_round,
                 "append_amount": str(append_amount),
@@ -713,34 +754,142 @@ def _testing_budget_snapshot_health(
     project_id: uuid.UUID,
     *,
     now: datetime,
-) -> tuple[bool, dict[str, int | str | bool | None]]:
+    mode: str,
+) -> tuple[bool, dict[str, int | str | bool | None], dict[str, dict]]:
+    if mode == "reset":
+        return True, {
+            "status": "not_required",
+            "available": True,
+            "total_count": 0,
+            "fresh_count": 0,
+            "missing_count": 0,
+        }, {}
     facts = judgment_facts(db, project_id)
-    judgment_preference = load_account_judgment_preference(db, project_id)
     account_status = account_status_expression(facts)
-    cost_status = cost_judgment_expressions(facts, judgment_preference)["status"]
-    captured_at_values = db.scalars(select(Account.budget_snapshot_at)
-        .outerjoin(facts.lifetime_metrics, facts.lifetime_metrics.c.account_id == Account.id)
-        .outerjoin(facts.recent_metrics, facts.recent_metrics.c.account_id == Account.id)
-        .outerjoin(facts.campaign_facts, facts.campaign_facts.c.account_id == Account.id)
-        .where(
+    conditions = [
         Account.project_id == project_id,
         Account.is_active.is_(True),
         account_status.in_(IN_USE_ACCOUNT_STATUSES),
-        cost_status == COST_STATUS_COLD_START,
         api_eligible_account_condition(),
-    )).all()
+    ]
+    accounts = db.scalars(select(Account)
+        .outerjoin(facts.lifetime_metrics, facts.lifetime_metrics.c.account_id == Account.id)
+        .outerjoin(facts.recent_metrics, facts.recent_metrics.c.account_id == Account.id)
+        .outerjoin(facts.campaign_facts, facts.campaign_facts.c.account_id == Account.id)
+        .where(*conditions)
+        .order_by(Account.baidu_account_id)).all()
+    captured_at_values = [account.budget_snapshot_at for account in accounts]
     coverage = budget_snapshot_coverage(captured_at_values, now=now)
+    mapping_counts: dict[uuid.UUID, int] = {}
+    report_failures: dict[str, str] = {}
+    if mode == "append" and accounts:
+        mapping_counts = {
+            account_id: int(count_value or 0)
+            for account_id, count_value in db.execute(
+                select(
+                    HduofenAccountMapping.account_id,
+                    func.count(HduofenAccountMapping.id),
+                )
+                .where(
+                    HduofenAccountMapping.project_id == project_id,
+                    HduofenAccountMapping.account_id.in_([account.id for account in accounts]),
+                )
+                .group_by(HduofenAccountMapping.account_id)
+            ).all()
+        }
+        latest_report_task = db.scalar(
+            select(BackgroundTask)
+            .where(
+                BackgroundTask.project_id == project_id,
+                BackgroundTask.task_type.in_([
+                    "baidu_account_hourly_refresh",
+                    "baidu_account_backfill",
+                ]),
+            )
+            .order_by(BackgroundTask.updated_at.desc(), BackgroundTask.created_at.desc())
+            .limit(1)
+        )
+        report_result = (
+            latest_report_task.result
+            if latest_report_task and isinstance(latest_report_task.result, dict)
+            else {}
+        )
+        report_state = (
+            report_result.get("state")
+            if isinstance(report_result.get("state"), dict)
+            else {}
+        )
+        report_failures = (
+            report_state.get("failed_accounts")
+            if isinstance(report_state.get("failed_accounts"), dict)
+            else {}
+        )
+    skipped_accounts: dict[str, dict] = {}
+    for account in accounts:
+        reasons: list[dict[str, str]] = []
+        snapshot_reason = budget_snapshot_skip_reason(account.budget_snapshot_at, now=now)
+        if snapshot_reason is not None:
+            reasons.append({"code": snapshot_reason[0], "message": snapshot_reason[1]})
+        if mode == "append":
+            report_error = report_failures.get(str(account.baidu_account_id))
+            if report_error:
+                reasons.append({
+                    "code": "baidu_account_report_missing",
+                    "message": "百度账户日报读取失败",
+                })
+            mapping_count = mapping_counts.get(account.id, 0)
+            if mapping_count == 0:
+                reasons.append({
+                    "code": "attribution_mapping_missing",
+                    "message": "未配置自定义ID，无法完成好多粉归因",
+                })
+            elif mapping_count > 1:
+                reasons.append({
+                    "code": "attribution_mapping_ambiguous",
+                    "message": "存在多个自定义ID映射，归因关系不唯一",
+                })
+            if account.rebate_rate is None:
+                reasons.append({
+                    "code": "rebate_rate_missing",
+                    "message": "账户返点缺失，无法计算现金成本",
+                })
+        if reasons:
+            skipped_accounts[str(account.baidu_account_id)] = {
+                "account_name": account.login_name,
+                "reasons": reasons,
+                "reason": "；".join(item["message"] for item in reasons),
+            }
     latest_snapshot_at = max(
         (value for value in captured_at_values if value is not None),
         default=None,
     )
-    return bool(coverage["available"]), {
+    fresh_account_ids = {
+        str(account.baidu_account_id)
+        for account in accounts
+        if snapshot_is_fresh(account.budget_snapshot_at, now=now)
+    }
+    usable_account_count = len(fresh_account_ids - set(skipped_accounts))
+    source_watermark = db.scalar(select(SyncWatermark).where(
+        SyncWatermark.source == "baidu_budget_snapshot",
+        SyncWatermark.scope == str(project_id),
+    ))
+    source_available = (
+        budget_snapshot_scope_is_available(captured_at_values, now=now)
+        and not (source_watermark and source_watermark.status == "blocked")
+    )
+    systemic_available = source_available and (not accounts or usable_account_count > 0)
+    return systemic_available, {
         **coverage,
         "snapshot_at": (
             latest_snapshot_at.isoformat() if latest_snapshot_at else None
         ),
-        "fresh": bool(coverage["available"]),
-    }
+        "fresh": source_available,
+        "systemic_available": systemic_available,
+        "usable_account_count": usable_account_count,
+        "skipped_count": len(skipped_accounts),
+        "protection_scope": "account",
+        "source_status": source_watermark.status if source_watermark else "missing",
+    }, skipped_accounts
 
 
 @celery_app.task
@@ -767,25 +916,42 @@ def run_project_budget_automation(project_id: str, task_id: str, mode: str):
             sources=required_sources,
             now=now,
         )
-        budget_healthy, budget_details = _testing_budget_snapshot_health(
+        budget_healthy, budget_details, skipped_accounts = _testing_budget_snapshot_health(
             db,
             project_uuid,
             now=now,
+            mode=mode,
         )
         watermark_details["baidu_budget_snapshot"] = budget_details
         healthy = healthy and budget_healthy
         if not healthy:
             task.status = TaskStatus.BLOCKED
             task.current_node = "data_freshness_guard"
-            task.last_error = "required data snapshots are incomplete or stale"
-            task.result = {"mode": mode, "watermarks": watermark_details}
+            task.last_error = "系统性数据源异常，相关策略已暂停"
+            task.result = {
+                "mode": mode,
+                "watermarks": watermark_details,
+                "skipped_accounts": skipped_accounts,
+                "skipped_count": len(skipped_accounts),
+            }
             flag_modified(task, "result")
             task.heartbeat_at = now
             db.commit()
-            return {"status": "blocked", "watermarks": watermark_details}
+            return {
+                "status": "blocked",
+                "watermarks": watermark_details,
+                "skipped_accounts": skipped_accounts,
+            }
 
         strategy_version = db.get(StrategyVersion, task.strategy_version_id) if task.strategy_version_id else None
         strategy_config = strategy_version.config if strategy_version else {}
+        reset_retry_count = int(strategy_config.get("failure_retry_count", 3))
+        reset_retry_interval = int(strategy_config.get("failure_retry_interval_seconds", 60))
+        failure_status = (
+            "retrying"
+            if mode == "reset" and task.retry_count < reset_retry_count
+            else "failed"
+        )
         candidates = _budget_automation_candidates(
             db,
             project_uuid,
@@ -793,6 +959,26 @@ def run_project_budget_automation(project_id: str, task_id: str, mode: str):
             now=now,
             config=strategy_config,
         )
+        candidates = [
+            candidate
+            for candidate in candidates
+            if str(candidate[0].baidu_account_id) not in skipped_accounts
+        ]
+        for account_id, skip in skipped_accounts.items():
+            db.add(AuditEvent(
+                project_id=project_uuid,
+                actor="budget-automation-worker",
+                action=f"account.budget.{mode}.skipped",
+                target_type="account",
+                target_id=account_id,
+                summary="账户预算自动化已跳过",
+                details={
+                    "account_name": skip["account_name"],
+                    "status": "skipped",
+                    "reason": skip["reason"],
+                    "reasons": skip["reasons"],
+                },
+            ))
         task.status = TaskStatus.RUNNING
         task.current_node = f"budget_{mode}_execute"
         task.result = {
@@ -801,6 +987,9 @@ def run_project_budget_automation(project_id: str, task_id: str, mode: str):
             "processed": 0,
             "succeeded": 0,
             "failed": {},
+            "skipped_accounts": skipped_accounts,
+            "skipped_count": len(skipped_accounts),
+            "watermarks": watermark_details,
         }
         task.heartbeat_at = now
         db.commit()
@@ -817,6 +1006,23 @@ def run_project_budget_automation(project_id: str, task_id: str, mode: str):
             lock_acquired = bool(db.scalar(select(func.pg_try_advisory_lock(lock_key))))
             if not lock_acquired:
                 task.result["failed"][str(account.baidu_account_id)] = "account lock busy"
+                db.add(AuditEvent(
+                    project_id=project_uuid,
+                    actor="budget-automation-worker",
+                    action=action,
+                    target_type="account",
+                    target_id=str(account.baidu_account_id),
+                    summary="账户预算自动化失败",
+                    details={
+                        "account_name": account.login_name,
+                        "before_budget": str(account.current_budget),
+                        "after_budget": str(target_budget),
+                        "status": failure_status,
+                        "error_type": "AccountLockBusy",
+                        "error": "account lock busy",
+                        "metrics": metrics,
+                    },
+                ))
                 continue
             before_budget = Decimal(account.current_budget)
             try:
@@ -894,10 +1100,11 @@ def run_project_budget_automation(project_id: str, task_id: str, mode: str):
                         "account_name": account.login_name,
                         "before_budget": str(before_budget),
                         "after_budget": str(target_budget),
-                        "status": "failed",
+                        "status": failure_status,
                         "append_round": metrics.get("append_round") if mode == "append" else None,
                         "append_amount": metrics.get("append_amount") if mode == "append" else None,
                         "error_type": type(exc).__name__,
+                        "error": str(exc)[:180],
                         "metrics": metrics,
                     },
                 ))
@@ -910,6 +1117,28 @@ def run_project_budget_automation(project_id: str, task_id: str, mode: str):
             db.commit()
 
         failures = task.result.get("failed") or {}
+        if mode == "reset" and failures and task.retry_count < reset_retry_count:
+            task.retry_count += 1
+            task.status = TaskStatus.PENDING
+            task.current_node = "budget_reset_retry_wait"
+            task.progress = 0
+            task.last_error = (
+                f"{len(failures)} accounts failed; retry "
+                f"{task.retry_count}/{reset_retry_count} scheduled"
+            )
+            task.heartbeat_at = datetime.now(UTC)
+            flag_modified(task, "result")
+            db.commit()
+            run_project_budget_automation.apply_async(
+                args=[project_id, task_id, mode],
+                countdown=reset_retry_interval,
+            )
+            return {
+                "status": "retrying",
+                "retry_count": task.retry_count,
+                "retry_after_seconds": reset_retry_interval,
+                **task.result,
+            }
         task.status = TaskStatus.SUCCEEDED if not failures else TaskStatus.FAILED
         task.current_node = f"budget_{mode}_complete"
         task.progress = 100
@@ -1030,6 +1259,18 @@ def execute_operation(self, task_id: str):
                         else execute_ad_build_cleanup
                     )
                     state = executor(db, task, operation, platform_client())
+                    if operation.operation_type == "account_retirement":
+                        retired_account = db.scalar(select(Account).where(
+                            Account.project_id == task.project_id,
+                            Account.baidu_account_id == operation.target_account_id,
+                        ))
+                        if retired_account is not None:
+                            _promote_refund_due_after_manual_elimination(
+                                db,
+                                retired_account,
+                                task,
+                                actor=operation.confirmed_by or operation.requested_by,
+                            )
                 finally:
                     db.execute(select(func.pg_advisory_unlock(lock_key)))
                     db.commit()
@@ -3335,7 +3576,11 @@ def _payment_result_rows(result: dict) -> list[dict]:
             candidates.append(value)
     for candidate in candidates:
         if isinstance(candidate, list):
-            return [row for row in candidate if isinstance(row, dict)]
+            if len(candidate) == 1 and isinstance(candidate[0], dict) and isinstance(candidate[0].get("list"), list):
+                return [row for row in candidate[0]["list"] if isinstance(row, dict)]
+            rows = [row for row in candidate if isinstance(row, dict)]
+            if rows:
+                return rows
     return []
 
 
@@ -3704,29 +3949,84 @@ def reconcile_notifications():
         return {"status": "complete", "projects": result}
 
 
-def strategy_schedule_slots(local_now: datetime, config: dict) -> bool:
-    """Return whether a published strategy is due in this Beijing minute."""
-    return local_now.strftime("%H:%M") in set(config.get("schedule_times") or [])
+def strategy_schedule_slots(
+    local_now: datetime,
+    config: dict,
+    *,
+    strategy_key: str = "budget_append",
+    closed_loop_minutes: int = 60,
+    daily_data_ready: bool = False,
+) -> bool:
+    """Return whether a published strategy is due under its shared runtime controls."""
+    defaults = DEFAULT_EXECUTION_SETTINGS[strategy_key]
+    mode = str(config.get("execution_mode") or defaults["execution_mode"])
+    cycle = str(config.get("execution_cycle") or defaults["execution_cycle"])
+    if mode == "off" or cycle == "global":
+        return False
+    if cycle == "closed_loop":
+        interval = max(15, min(1440, int(closed_loop_minutes or 60)))
+        minute_of_day = local_now.hour * 60 + local_now.minute
+        return minute_of_day % interval == 0
+    if cycle == "daily":
+        return daily_data_ready
+    if cycle == "periodic":
+        days = max(1, min(365, int(config.get("execution_period_days") or 1)))
+        return daily_data_ready and local_now.date().toordinal() % days == 0
+    return False
+
+
+def _strategy_schedule_slot(local_now: datetime, cycle: str) -> datetime:
+    if cycle in {"daily", "periodic"}:
+        # One canonical slot per completed data date prevents the minute poller
+        # from dispatching the same daily action more than once.
+        data_date = local_now.date() - timedelta(days=1)
+        return datetime.combine(data_date, time.min, tzinfo=SHANGHAI).astimezone(UTC)
+    return local_now.astimezone(UTC)
 
 
 @celery_app.task
 def dispatch_due_strategy_schedules():
     local_now = datetime.now(SHANGHAI).replace(second=0, microsecond=0)
-    scheduled_for = local_now.astimezone(UTC)
     dispatches: list[tuple[str, str, str, str]] = []
     with SessionLocal() as db:
         projects = db.scalars(select(Project).where(Project.enabled.is_(True))).all()
         for project in projects:
+            settings_row = db.scalar(select(ProjectPreference).where(
+                ProjectPreference.project_id == project.id,
+                ProjectPreference.key == "settings",
+            ))
+            project_settings = settings_row.value if settings_row and isinstance(settings_row.value, dict) else {}
+            closed_loop_minutes = max(15, min(1440, int(project_settings.get("report_refresh_minutes") or 60)))
+            daily_status = db.scalar(select(DailyDataStatus).where(
+                DailyDataStatus.project_id == project.id,
+                DailyDataStatus.report_date == local_now.date() - timedelta(days=1),
+            ))
+            daily_data_ready = bool(daily_status and daily_status.finalized_at is not None)
             for key in ("budget_reset", "budget_append", "elimination"):
                 version = active_strategy_version(db, project.id, key)
-                if not strategy_schedule_slots(local_now, version.config):
+                config = version.config or {}
+                if not strategy_schedule_slots(
+                    local_now,
+                    config,
+                    strategy_key=key,
+                    closed_loop_minutes=closed_loop_minutes,
+                    daily_data_ready=daily_data_ready,
+                ):
                     continue
+                defaults = DEFAULT_EXECUTION_SETTINGS[key]
+                mode = str(config.get("execution_mode") or defaults["execution_mode"])
+                cycle = str(config.get("execution_cycle") or defaults["execution_cycle"])
+                scheduled_for = _strategy_schedule_slot(local_now, cycle)
+                run_status = {
+                    "suggest": "suggested",
+                    "confirm": "awaiting_confirm",
+                }.get(mode, "dispatching")
                 statement = (
                     pg_insert(StrategyScheduleRun)
                     .values(
                         id=uuid.uuid4(), project_id=project.id, strategy_key=key,
                         strategy_version_id=version.id, scheduled_for=scheduled_for,
-                        status="dispatching",
+                        status=run_status,
                     )
                     .on_conflict_do_nothing(
                         index_elements=["project_id", "strategy_key", "scheduled_for"]
@@ -3734,17 +4034,21 @@ def dispatch_due_strategy_schedules():
                     .returning(StrategyScheduleRun.id)
                 )
                 run_id = db.scalar(statement)
-                if run_id:
+                if run_id and mode == "auto":
                     dispatches.append((key, str(project.id), str(version.id), str(run_id)))
         db.commit()
     for key, project_id, version_id, run_id in dispatches:
         if key == "budget_reset":
-            queue_due_budget_snapshot_syncs.delay("midnight_reset", project_id, version_id, run_id)
+            queue_budget_automation.delay("reset", project_id, version_id, run_id)
         elif key == "budget_append":
             queue_budget_automation.delay("append", project_id, version_id, run_id)
         else:
             queue_account_elimination_cycles.delay(project_id, version_id, run_id)
-    return {"status": "dispatched", "scheduled_for": scheduled_for.isoformat(), "count": len(dispatches)}
+    return {
+        "status": "dispatched",
+        "scheduled_for": local_now.astimezone(UTC).isoformat(),
+        "count": len(dispatches),
+    }
 
 
 @celery_app.task
@@ -4575,20 +4879,33 @@ ELIMINATION_TASK_TYPE = "account_elimination_cycle"
 ELIMINATION_ACCOUNT_BATCH_SIZE = 20
 
 
+def _campaigns_requiring_pause(campaign_rows: list[dict]) -> list[int]:
+    return sorted({
+        int(row["campaignId"])
+        for row in campaign_rows
+        if row.get("campaignId") is not None and not bool(row.get("pause"))
+    })
+
+
 def _effective_lifecycle(account: Account) -> str | None:
     return account.lifecycle_override or account.lifecycle_stage
 
 
-def _elimination_candidates(db, project_id: uuid.UUID, config: dict | None = None) -> list[dict]:
-    config = config or {}
-    spend_limit = Decimal(str(config.get("spend_without_add_limit", "100")))
-    add_cost_limit = Decimal(str(config.get("add_cost_limit", "120")))
+def _elimination_matches(db, project_id: uuid.UUID, judgment_preference: dict | None = None) -> list[dict]:
+    preference = judgment_preference or load_account_judgment_preference(db, project_id)
+    judgment_mode = preference["mode"]
+    rules = preference[judgment_mode]
+    conversion_name = "复制" if judgment_mode == "copy_cash" else "加粉"
+    spend_limit = Decimal(str(rules["cold_start_spend_limit"]))
+    cost_limit = Decimal(str(rules["cost_limit"]))
     rows = db.execute(
         select(
             Account.id,
             Account.baidu_account_id,
+            Account.rebate_rate,
             func.coalesce(func.sum(PerformanceDaily.spend), 0),
             func.coalesce(func.sum(PerformanceDaily.adds), 0),
+            func.coalesce(func.sum(PerformanceDaily.copies), 0),
         )
         .outerjoin(PerformanceDaily, PerformanceDaily.account_id == Account.id)
         .where(
@@ -4596,29 +4913,44 @@ def _elimination_candidates(db, project_id: uuid.UUID, config: dict | None = Non
             Account.is_active.is_(True),
             api_eligible_account_condition(),
             effective_testing_condition(),
+            Account.id.in_(
+                select(CampaignCache.account_id).where(
+                    CampaignCache.is_active.is_(True),
+                    CampaignCache.pause.is_not(True),
+                )
+            ),
         )
-        .group_by(Account.id, Account.baidu_account_id)
+        .group_by(Account.id, Account.baidu_account_id, Account.rebate_rate)
         .order_by(Account.baidu_account_id)
     ).all()
-    candidates = []
-    for account_id, baidu_account_id, spend, adds in rows:
+    matches = []
+    for account_id, baidu_account_id, rebate_rate, spend, adds, copies in rows:
         spend_value = Decimal(spend or 0)
-        adds_value = int(adds or 0)
+        conversion_count = int(copies or 0) if judgment_mode == "copy_cash" else int(adds or 0)
+        cash_spend = calculate_cash_spend(
+            spend_value,
+            Decimal(rebate_rate) if rebate_rate is not None else None,
+        )
         reason = elimination_reason(
             spend_value,
-            adds_value,
+            conversion_count,
             spend_without_add_limit=spend_limit,
-            add_cost_limit=add_cost_limit,
+            add_cost_limit=cost_limit,
+            cash_spend=cash_spend,
+            require_cash_spend=True,
+            conversion_label=conversion_name,
         )
         if reason:
-            candidates.append({
+            matches.append({
                 "account_id": str(account_id),
                 "baidu_account_id": int(baidu_account_id),
                 "spend": str(spend_value.quantize(Decimal("0.01"))),
-                "adds": adds_value,
+                "cost_mode": judgment_mode,
+                "conversion_name": conversion_name,
+                "conversions": conversion_count,
                 "reason": reason,
             })
-    return candidates
+    return matches
 
 
 def _refresh_is_closed(db, project_id: uuid.UUID, target_date: date) -> tuple[bool, str]:
@@ -4643,10 +4975,12 @@ def _persist_elimination_task(db, task: BackgroundTask, state: dict) -> None:
     db.commit()
 
 
-def _promote_refund_due_after_elimination(
+def _promote_refund_due_after_manual_elimination(
     db,
     account: Account,
     task: BackgroundTask,
+    *,
+    actor: str,
 ) -> list[Account]:
     """Promote one subject only after an account elimination event.
 
@@ -4679,7 +5013,7 @@ def _promote_refund_due_after_elimination(
     db.flush()
     db.add(AuditEvent(
         project_id=account.project_id,
-        actor="account-elimination-worker",
+        actor=actor,
         action="account.subject.refund_due",
         target_type="account_subject",
         target_id=subject,
@@ -4700,7 +5034,7 @@ def _finish_elimination_task(db, task: BackgroundTask, state: dict) -> dict:
     task.status = TaskStatus.SUCCEEDED if not failures else TaskStatus.FAILED
     task.current_node = "elimination_complete" if not failures else "elimination_incomplete"
     task.progress = 100
-    task.last_error = None if not failures else f"{len(failures)} 个账户淘汰失败"
+    task.last_error = None if not failures else f"{len(failures)} 个账户计划暂停失败"
     task.result = {**(task.result if isinstance(task.result, dict) else {}), "state": state}
     flag_modified(task, "result")
     task.heartbeat_at = datetime.now(UTC)
@@ -4710,12 +5044,11 @@ def _finish_elimination_task(db, task: BackgroundTask, state: dict) -> dict:
         action="account.elimination.cycle.complete",
         target_type="background_task",
         target_id=str(task.id),
-        summary=f"23:20账户淘汰闭环{task.status.value}",
+        summary=f"账户淘汰策略暂停计划{task.status.value}",
         details={
-            "candidate_count": len(state.get("candidates") or []),
-            "eliminated_count": int(state.get("eliminated_count") or 0),
-            "deleted_campaign_count": int(state.get("deleted_campaign_count") or 0),
-            "refund_due_subject_count": int(state.get("refund_due_subject_count") or 0),
+            "matched_account_count": len(state.get("matched_accounts") or []),
+            "paused_account_count": int(state.get("paused_account_count") or 0),
+            "paused_campaign_count": int(state.get("paused_campaign_count") or 0),
             "failed_account_count": len(failures),
         },
     ))
@@ -4741,22 +5074,36 @@ def _run_account_elimination_cycle(task_id: str) -> dict:
             return {"status": "blocked", "reason": task.last_error}
 
         state = payload.get("state") if isinstance(payload.get("state"), dict) else {}
-        if not isinstance(state.get("candidates"), list):
-            strategy_version = db.get(StrategyVersion, task.strategy_version_id) if task.strategy_version_id else None
-            strategy_config = strategy_version.config if strategy_version else {}
-            state["candidates"] = _elimination_candidates(db, task.project_id, strategy_config)
+        request_rules = request_details.get("rules") if isinstance(request_details.get("rules"), dict) else {}
+        request_mode = request_rules.get("mode")
+        if request_mode in {"add_cash", "copy_cash"} and request_rules.get("cold_start_spend_limit") is not None and request_rules.get("cost_limit") is not None:
+            judgment_preference = {
+                "mode": request_mode,
+                request_mode: {
+                    "cold_start_spend_limit": str(request_rules["cold_start_spend_limit"]),
+                    "cost_limit": str(request_rules["cost_limit"]),
+                },
+            }
+        else:
+            judgment_preference = load_account_judgment_preference(db, task.project_id)
+        if not isinstance(state.get("matched_accounts"), list):
+            legacy_matches = state.pop("candidates", None)
+            state["matched_accounts"] = (
+                legacy_matches
+                if isinstance(legacy_matches, list)
+                else _elimination_matches(db, task.project_id, judgment_preference)
+            )
             state["cursor"] = 0
-            state["eliminated_count"] = 0
-            state["deleted_campaign_count"] = 0
-            state["refund_due_subject_count"] = 0
+            state["paused_account_count"] = 0
+            state["paused_campaign_count"] = 0
             state["failed_accounts"] = {}
-        candidates = state["candidates"]
-        if not candidates:
+        matched_accounts = state["matched_accounts"]
+        if not matched_accounts:
             task.status = TaskStatus.SUCCEEDED
             task.current_node = "no_matching_accounts"
             task.progress = 100
             _persist_elimination_task(db, task, state)
-            return {"status": "succeeded", "task_id": task_id, "candidate_count": 0}
+            return {"status": "succeeded", "task_id": task_id, "matched_account_count": 0}
         if not settings.account_auto_elimination_enabled:
             task.status = TaskStatus.BLOCKED
             task.current_node = "automation_write_disabled"
@@ -4789,26 +5136,40 @@ def _run_account_elimination_cycle(task_id: str) -> dict:
             return {"status": "waiting", "reason": refresh_message, "retry": task.retry_count}
 
         task.status = TaskStatus.RUNNING
-        task.current_node = "delete_account_campaigns"
+        task.current_node = "pause_account_campaigns"
         task.last_error = None
         client = platform_client(write_enabled=settings.account_auto_elimination_enabled)
         start_index = int(state.get("cursor") or 0)
-        stop_index = min(len(candidates), start_index + ELIMINATION_ACCOUNT_BATCH_SIZE)
+        stop_index = min(len(matched_accounts), start_index + ELIMINATION_ACCOUNT_BATCH_SIZE)
         for index in range(start_index, stop_index):
-            candidate = candidates[index]
-            account = db.get(Account, uuid.UUID(candidate["account_id"]))
+            matched_account = matched_accounts[index]
+            account = db.get(Account, uuid.UUID(matched_account["account_id"]))
             if account is None or _effective_lifecycle(account) != TESTING or (
                 account.eliminated_at is not None or account.lifecycle_stage == ELIMINATED
             ):
                 state["cursor"] = index + 1
                 continue
-            spend, adds = db.execute(
+            spend, adds, copies = db.execute(
                 select(
                     func.coalesce(func.sum(PerformanceDaily.spend), 0),
                     func.coalesce(func.sum(PerformanceDaily.adds), 0),
+                    func.coalesce(func.sum(PerformanceDaily.copies), 0),
                 ).where(PerformanceDaily.account_id == account.id)
             ).one()
-            current_reason = elimination_reason(Decimal(spend or 0), int(adds or 0))
+            judgment_mode = judgment_preference["mode"]
+            judgment_rules = judgment_preference[judgment_mode]
+            conversion_name = "复制" if judgment_mode == "copy_cash" else "加粉"
+            spend_value = Decimal(spend or 0)
+            conversion_count = int(copies or 0) if judgment_mode == "copy_cash" else int(adds or 0)
+            current_reason = elimination_reason(
+                spend_value,
+                conversion_count,
+                spend_without_add_limit=Decimal(str(judgment_rules["cold_start_spend_limit"])),
+                add_cost_limit=Decimal(str(judgment_rules["cost_limit"])),
+                cash_spend=calculate_cash_spend(spend_value, Decimal(account.rebate_rate) if account.rebate_rate is not None else None),
+                require_cash_spend=True,
+                conversion_label=conversion_name,
+            )
             if current_reason is None:
                 state["cursor"] = index + 1
                 continue
@@ -4819,20 +5180,21 @@ def _run_account_elimination_cycle(task_id: str) -> dict:
                     idempotency_key="",
                 )
                 campaign_payload = {
-                    "campaignFields": ["campaignId", "campaignName", "status"],
+                    "campaignFields": ["campaignId", "campaignName", "pause", "status"],
                     "campaignIds": [],
                 }
                 campaign_rows = baidu_result_rows(
                     client.execute_read(context, "campaign.get", campaign_payload)
                 )
-                campaign_ids = sorted({
-                    int(row["campaignId"])
-                    for row in campaign_rows
-                    if row.get("campaignId") is not None
-                })
-                for batch_number, campaign_batch in enumerate(chunks(campaign_ids, 100), start=1):
+                _store_campaign_cache_rows(db, account, campaign_rows, full_sync=True)
+                campaigns_to_pause = _campaigns_requiring_pause(campaign_rows)
+                for batch_number, campaign_batch in enumerate(chunks(campaigns_to_pause, 100), start=1):
+                    update_types = [
+                        {"campaignId": campaign_id, "pause": True}
+                        for campaign_id in campaign_batch
+                    ]
                     fingerprint = hashlib.sha256(
-                        ",".join(str(item) for item in campaign_batch).encode("ascii")
+                        json.dumps(update_types, sort_keys=True, separators=(",", ":")).encode("utf-8")
                     ).hexdigest()[:16]
                     client.execute_write(
                         context=call_context(
@@ -4843,48 +5205,53 @@ def _run_account_elimination_cycle(task_id: str) -> dict:
                                 f"{batch_number}:{fingerprint}"
                             ),
                         ),
-                        service="campaign.delete",
-                        payload={"campaignIds": campaign_batch},
+                        service="campaign.update",
+                        payload={"campaignTypes": update_types},
                     )
-                remaining = baidu_result_rows(
-                    client.execute_read(context, "campaign.get", campaign_payload)
-                )
-                if remaining:
-                    raise RuntimeError("删除后仍回读到推广计划，拒绝更新账户生命周期")
-
-                _store_campaign_cache_rows(db, account, [], full_sync=True)
-                account.lifecycle_stage = ELIMINATED
-                account.lifecycle_override = None
-                account.active_keyword_count = 0
-                account.lifecycle_evaluated_at = datetime.now(UTC)
-                account.eliminated_at = datetime.now(UTC)
-                account.elimination_reason = current_reason
-                account.elimination_task_id = task.id
-                state["eliminated_count"] = int(state["eliminated_count"]) + 1
-                state["deleted_campaign_count"] = (
-                    int(state["deleted_campaign_count"]) + len(campaign_ids)
+                    readback_rows = baidu_result_rows(client.execute_read(
+                        context,
+                        "campaign.get",
+                        {
+                            "campaignFields": ["campaignId", "campaignName", "pause", "status"],
+                            "campaignIds": campaign_batch,
+                        },
+                    ))
+                    readback = {
+                        int(row["campaignId"]): row
+                        for row in readback_rows
+                        if row.get("campaignId") is not None
+                    }
+                    for campaign_id in campaign_batch:
+                        if campaign_id not in readback or not bool(readback[campaign_id].get("pause")):
+                            raise RuntimeError(f"计划 {campaign_id} 暂停后回读不一致")
+                    _store_campaign_cache_rows(
+                        db,
+                        account,
+                        list(readback.values()),
+                        full_sync=False,
+                    )
+                state["paused_account_count"] = int(state["paused_account_count"]) + 1
+                state["paused_campaign_count"] = (
+                    int(state["paused_campaign_count"]) + len(campaigns_to_pause)
                 )
                 db.add(AuditEvent(
                     project_id=task.project_id,
                     actor="account-elimination-worker",
-                    action="account.campaigns.deleted_and_eliminated",
+                    action="account.campaigns.paused_for_manual_retirement",
                     target_type="account",
                     target_id=str(account.baidu_account_id),
-                    summary="删除账户全部计划并进入已淘汰生命周期",
+                    summary="账户达到淘汰规则，已暂停全部计划并等待人工确认",
                     details={
                         "reason": current_reason,
                         "spend": str(Decimal(spend or 0).quantize(Decimal("0.01"))),
-                        "adds": int(adds or 0),
-                        "deleted_campaign_count": len(campaign_ids),
-                        "readback_remaining": 0,
+                        "cost_mode": judgment_mode,
+                        "conversion_name": conversion_name,
+                        "conversions": conversion_count,
+                        "paused_campaign_count": len(campaigns_to_pause),
+                        "manual_retirement_required": True,
                         "task_id": task_id,
                     },
                 ))
-                promoted_accounts = _promote_refund_due_after_elimination(db, account, task)
-                if promoted_accounts:
-                    state["refund_due_subject_count"] = (
-                        int(state.get("refund_due_subject_count") or 0) + 1
-                    )
                 state["cursor"] = index + 1
                 _persist_elimination_task(db, task, state)
             except RateLimitError as exc:
@@ -4910,17 +5277,17 @@ def _run_account_elimination_cycle(task_id: str) -> dict:
                 db.rollback()
                 task = db.get(BackgroundTask, task_uuid)
                 failures = state["failed_accounts"]
-                failures[str(candidate["baidu_account_id"])] = (
+                failures[str(matched_account["baidu_account_id"])] = (
                     f"{type(exc).__name__}: {str(exc)[:180]}"
                 )
                 state["cursor"] = index + 1
                 _persist_elimination_task(db, task, state)
 
         task = db.get(BackgroundTask, task_uuid)
-        if int(state.get("cursor") or 0) < len(candidates):
+        if int(state.get("cursor") or 0) < len(matched_accounts):
             task.status = TaskStatus.PENDING
             task.current_node = "next_account_batch"
-            task.progress = min(95, int(int(state["cursor"]) * 100 / len(candidates)))
+            task.progress = min(95, int(int(state["cursor"]) * 100 / len(matched_accounts)))
             _persist_elimination_task(db, task, state)
             run_account_elimination_cycle.delay(task_id)
             return {"status": "continued", "task_id": task_id, "cursor": state["cursor"]}
@@ -4976,6 +5343,9 @@ def queue_account_elimination_cycles(
             )) is not None
             if not version_is_valid:
                 continue
+            judgment_preference = load_account_judgment_preference(db, project.id)
+            judgment_mode = judgment_preference["mode"]
+            judgment_rules = judgment_preference[judgment_mode]
             task = BackgroundTask(
                 project_id=project.id,
                 strategy_version_id=version.id,
@@ -4985,8 +5355,9 @@ def queue_account_elimination_cycles(
                     "request": {
                         "date": target_date.isoformat(),
                         "rules": {
-                            "spend_without_add": f">{version.config['spend_without_add_limit']}",
-                            "add_cost": f">{version.config['add_cost_limit']}",
+                            "mode": judgment_mode,
+                            "cold_start_spend_limit": judgment_rules["cold_start_spend_limit"],
+                            "cost_limit": judgment_rules["cost_limit"],
                         },
                     },
                     "state": {},

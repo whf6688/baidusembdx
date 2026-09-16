@@ -571,6 +571,8 @@ class FinancePaymentRecord(Base):
     order_row: Mapped[str | None] = mapped_column(String(200), nullable=True)
     raw_payload: Mapped[dict] = mapped_column(JSONB, default=dict)
     source_watermark: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
+    reconciled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconciled_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, onupdate=now_utc)
 

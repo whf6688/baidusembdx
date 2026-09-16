@@ -11,6 +11,7 @@ from .models import Account
 
 WORKFLOW_VERSION = "weight-loss-account-flow-v5"
 BEIJING = ZoneInfo("Asia/Shanghai")
+OCPC_PROJECT_NAME_LIMIT = 20
 REPLACED_TRACKING_PARAMETERS = {
     "userid",
     "keywordid",
@@ -69,6 +70,23 @@ ACCOUNT_WORKFLOW = [
         "applies_to": "all",
     },
 ]
+
+
+def build_ocpc_project_name(project_name: str, execution_at: datetime) -> str:
+    """Build the immutable Baidu project name from the managed project and execution slot."""
+    normalized_name = project_name.strip()
+    if not normalized_name:
+        raise ValueError("项目管理中的项目名称不能为空")
+    if execution_at.tzinfo is None or execution_at.utcoffset() is None:
+        raise ValueError("项目执行时间必须包含时区")
+    suffix = execution_at.astimezone(BEIJING).strftime("_%m%d_%H")
+    result = f"{normalized_name}{suffix}"
+    if len(result) > OCPC_PROJECT_NAME_LIMIT:
+        available = OCPC_PROJECT_NAME_LIMIT - len(suffix)
+        raise ValueError(
+            f"项目名称“{normalized_name}”过长：按百度项目名称上限，项目管理名称最多 {available} 个字符"
+        )
+    return result
 
 
 def _text(value) -> str:

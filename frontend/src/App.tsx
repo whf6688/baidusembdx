@@ -50,7 +50,7 @@ import { ProjectManagementPage } from "./features/projects/ProjectManagementPage
 import { ReportsPage } from "./features/reports/ReportsPage";
 import { FinanceReportsPage } from "./features/finance/FinanceReportsPage";
 import { StrategyCenter } from "./features/strategies/StrategyCenter";
-import type { GlobalJudgmentAction, StrategyAction } from "./features/strategies/StrategyCenter";
+import type { GlobalJudgmentAction, GlobalRuleContext, StrategyAction } from "./features/strategies/StrategyCenter";
 import { getUiTimeZone, setUiTimeZone } from "./uiTimeZone";
 import { keywordTierRuleFields } from "./keywordTierRuleFields";
 import { WeeklyScheduleSelector, type WeeklyScheduleWindow } from "./ui";
@@ -299,7 +299,11 @@ function projectUrl(projectCode: string, nextPage?: Page | AutoLaunchView) {
 function rememberPageInUrl(value: Page | AutoLaunchView) {
   const url = new URL(window.location.href);
   url.searchParams.set("page", value);
-  if (value !== "strategies") url.searchParams.delete("section");
+  if (value !== "strategies") {
+    url.searchParams.delete("section");
+    url.searchParams.delete("strategy_action");
+    url.searchParams.delete("strategy_pane");
+  }
   window.history.pushState(
     window.history.state,
     "",
@@ -2625,12 +2629,12 @@ function taskNodeText(value: string) {
         capture_blocked: "好多粉采集受阻",
         incomplete_dataset: "采集数据不完整，未写入正式数据",
         history_import_complete: "好多粉历史数据导入完成",
-        elimination_complete: "账户淘汰完成",
-        elimination_incomplete: "部分账户淘汰失败",
+        elimination_complete: "账户计划暂停完成",
+        elimination_incomplete: "部分账户计划暂停失败",
         no_matching_accounts: "没有符合条件的账户",
         automation_write_disabled: "自动操作写入未开启",
         waiting_for_2300_data: "等待当天 23:00 数据闭环",
-        delete_account_campaigns: "正在删除淘汰账户计划",
+        pause_account_campaigns: "正在暂停命中账户全部计划",
         queued_safety_check: "等待安全检查",
         failed: "执行失败",
         material_preflight: "检查物料与账户配置",
@@ -3887,14 +3891,14 @@ function ProjectOperationsPage({
     { title: string; description: string }
   > = {
     "loop-check": {
-      title: "闭环运行状态",
-      description: "持续检查百度数据、好多粉数据、归因、同步水位与规则评估链路",
+      title: "实时闭环",
+      description: "账户归因设置",
     },
     "budget-reset": {
       title: "预算重置",
       description: data
-        ? `每日 ${data.budget_reset.schedule} 检查成本判断为冷启动期的账户，将命中账户的日预算固定为 ${data.budget_reset.target_budget} 元`
-        : "按已发布规则检查冷启动期账户，并将命中账户的日预算固定为填写金额",
+        ? `每日 ${data.budget_reset.schedule} 检查计划全停、预算不足和上线账户，将日预算恢复为 ${data.budget_reset.target_budget} 账户币`
+        : "到设定时间检查目标账户状态，并将日预算恢复为填写的初始预算",
     },
     "budget-append": {
       title: "预算追加",
@@ -3902,7 +3906,9 @@ function ProjectOperationsPage({
     },
     eliminations: {
       title: "淘汰记录",
-      description: "集中查看已淘汰账户的消费、加粉成本和钱柜账户",
+      description: data
+        ? `集中查看已淘汰账户的消费、现金${data.eliminations.conversion_label}成本和钱柜账户`
+        : "集中查看已淘汰账户的消费、转化成本和钱柜账户",
     },
   };
   const meta = pageMeta[view];
@@ -3918,15 +3924,17 @@ function ProjectOperationsPage({
     <section
       className={`operations-page ${recordsOnly ? "strategy-results-only" : ""} ${embedded ? "strategy-embedded-operations" : ""}`}
     >
-      <section className="page-heading compact">
-        <div>
-          <h1>{meta.title}</h1>
-          <p>{meta.description}</p>
-        </div>
-        <Button appearance="secondary" disabled={loading} onClick={load}>
-          {loading ? "读取中…" : "刷新"}
-        </Button>
-      </section>
+      {view !== "loop-check" && (
+        <section className="page-heading compact">
+          <div>
+            <h1>{meta.title}</h1>
+            <p>{meta.description}</p>
+          </div>
+          <Button appearance="secondary" disabled={loading} onClick={load}>
+            {loading ? "读取中…" : "刷新"}
+          </Button>
+        </section>
+      )}
       {error && <PopupMessage intent="error">{error}</PopupMessage>}
       {view !== "loop-check" && (
         <div className="operations-filter-bar">
@@ -3956,97 +3964,6 @@ function ProjectOperationsPage({
       ) : (
         data && (
           <>
-            {view === "loop-check" && (
-              <>
-                <div className="operations-facts">
-                  <span>
-                    <small>检测频率</small>
-                    <strong>{data.loop_check.interval_minutes} 分钟</strong>
-                  </span>
-                  <span>
-                    <small>闭环状态</small>
-                    <strong>
-                      {data.loop_check.status === "healthy"
-                        ? "运行正常"
-                        : "等待数据"}
-                    </strong>
-                  </span>
-                  <span>
-                    <small>百度数据</small>
-                    <strong>
-                      {formatDateTime(data.loop_check.baidu_watermark)}
-                    </strong>
-                  </span>
-                  <span>
-                    <small>好多粉数据</small>
-                    <strong>
-                      {formatDateTime(data.loop_check.hduofen_watermark)}
-                    </strong>
-                  </span>
-                  <span>
-                    <small>预算快照</small>
-                    <strong>
-                      {formatDateTime(data.loop_check.budget_watermark)}
-                    </strong>
-                  </span>
-                  <span>
-                    <small>创意审核</small>
-                    <strong>
-                      {formatDateTime(data.loop_check.creative_watermark)}
-                    </strong>
-                  </span>
-                </div>
-                {data.loop_check.status !== "healthy" && (
-                  <PopupMessage intent="warning">
-                    百度日报、好多粉、预算快照或创意审核未同时满足 60
-                    分钟新鲜度，自动规则保持保护状态，不产生写入动作
-                  </PopupMessage>
-                )}
-                <section className="panel loop-check-panel">
-                  <div className="panel-head">
-                    <div>
-                      <h2>60 分钟闭环</h2>
-                      <p>只有前一节点完整，才会继续评估下一节点</p>
-                    </div>
-                    <Badge
-                      appearance="tint"
-                      color={
-                        data.loop_check.status === "healthy"
-                          ? "success"
-                          : "warning"
-                      }
-                    >
-                      {data.loop_check.status === "healthy"
-                        ? "闭环正常"
-                        : "保护中"}
-                    </Badge>
-                  </div>
-                  <div className="loop-flow">
-                    {[
-                      ["01", "百度日报同步", "读取在用账户消费数据"],
-                      ["02", "好多粉同步", "读取访客、复制与加粉"],
-                      [
-                        "03",
-                        "账户预算与余额",
-                        "回读在用账户的当前预算、余额与预算类型；余额低于预警值时生成充值提醒",
-                      ],
-                      ["04", "创意审核", "检查拒审并按创意中心规则重建"],
-                      ["05", "账户归因", "账户与关键词必须唯一匹配"],
-                      ["06", "规则评估", data.loop_check.next_action],
-                    ].map(([index, title, text]) => (
-                      <article key={index}>
-                        <span>{index}</span>
-                        <div>
-                          <strong>{title}</strong>
-                          <small>{text}</small>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-              </>
-            )}
-
             {view === "budget-reset" && (
               <>
                 <div className="operations-facts">
@@ -4055,15 +3972,15 @@ function ProjectOperationsPage({
                     <strong>每日 {data.budget_reset.schedule}</strong>
                   </span>
                   <span>
-                    <small>目标预算</small>
-                    <strong>¥{data.budget_reset.target_budget}</strong>
+                    <small>初始预算</small>
+                    <strong>{data.budget_reset.target_budget} 账户币</strong>
                   </span>
                   <span>
                     <small>执行范围</small>
                     <strong>{data.budget_reset.scope}</strong>
                   </span>
                   <span>
-                    <small>预算查询账户</small>
+                    <small>目标状态账户</small>
                     <strong>{data.budget_reset.test_account_count}</strong>
                   </span>
                 </div>
@@ -4092,20 +4009,13 @@ function ProjectOperationsPage({
                   <div className="budget-rule-grid">
                     <article>
                       <small>账户范围</small>
-                      <strong>成本判断 = 冷启动期</strong>
-                      <p>其他成本判断账户一律跳过</p>
-                    </article>
-                    <article>
-                      <small>变更条件</small>
-                      <strong>
-                        当前预算 ≠ ¥{data.budget_reset.target_budget}
-                      </strong>
-                      <p>预算没有变化的账户不提交百度</p>
+                      <strong>计划全停、预算不足、上线</strong>
+                      <p>不使用成本判断，不等待数据水位</p>
                     </article>
                     <article>
                       <small>执行结果</small>
                       <strong>
-                        固定为 ¥{data.budget_reset.target_budget}
+                        恢复为 {data.budget_reset.target_budget} 账户币
                       </strong>
                       <p>写入后回读并记录差异与审计</p>
                     </article>
@@ -4114,16 +4024,15 @@ function ProjectOperationsPage({
                     <span>需重置账户</span>
                     <strong>{data.budget_reset.candidate_count ?? "—"}</strong>
                     <small>
-                      {data.budget_reset.budget_snapshot_available
-                        ? `已排除当前预算为 ${data.budget_reset.target_budget} 元的账户`
-                        : "等待预算快照"}
+                      到点执行，无成本判断或数据水位前置条件
                     </small>
                   </footer>
                 </section>
                 <BudgetHistoryPanel
-                  title="预算重置记录"
+                  title="预算重置失败记录"
                   history={data.budget_reset.history}
-                  emptyText="所选日期没有预算重置记录"
+                  emptyText="所选日期没有预算重置失败账户"
+                  failuresOnly
                 />
               </>
             )}
@@ -4136,8 +4045,8 @@ function ProjectOperationsPage({
                     <strong>{data.budget_append.interval_minutes} 分钟</strong>
                   </span>
                   <span>
-                    <small>加粉成本</small>
-                    <strong>&lt; ¥{data.budget_append.add_cost_limit}</strong>
+                    <small>现金{data.budget_append.conversion_label}成本</small>
+                    <strong>&lt; ¥{data.budget_append.cost_limit}</strong>
                   </span>
                   <span>
                     <small>预算利用率</small>
@@ -4183,7 +4092,7 @@ function ProjectOperationsPage({
                       <span>1</span>
                       <div>
                         <strong>成本达标</strong>
-                        <small>加粉数大于 0，且加粉成本低于 100 元</small>
+                        <small>{data.budget_append.conversion_label}数大于 0，且现金{data.budget_append.conversion_label}成本低于 {data.budget_append.cost_limit} 元</small>
                       </div>
                     </article>
                     <article>
@@ -4239,7 +4148,7 @@ function ProjectOperationsPage({
                   <div className="panel-head">
                     <div>
                       <h2>淘汰明细</h2>
-                      <p>金额与加粉成本由后台统一计算，分母为零时显示“—”</p>
+                      <p>金额与现金{data.eliminations.conversion_label}成本由后台统一计算，分母为零时显示“—”</p>
                     </div>
                     <Badge appearance="tint">{data.eliminations.total}</Badge>
                   </div>
@@ -4252,8 +4161,8 @@ function ProjectOperationsPage({
                             <th className="table-cell--start">账户</th>
                             <th className="table-cell--start table-cell--id">账户ID</th>
                             <th className="table-cell--end table-cell--number">消费</th>
-                            <th className="table-cell--end table-cell--number">加粉</th>
-                            <th className="table-cell--end table-cell--number">加粉成本</th>
+                            <th className="table-cell--end table-cell--number">{data.eliminations.conversion_label}</th>
+                            <th className="table-cell--end table-cell--number">现金{data.eliminations.conversion_label}成本</th>
                             <th className="table-cell--start">钱柜账户</th>
                           </tr>
                         </thead>
@@ -4271,11 +4180,11 @@ function ProjectOperationsPage({
                                   minimumFractionDigits: 2,
                                 })}
                               </td>
-                              <td className="table-cell--end table-cell--number">{formatNumber(row.adds)}</td>
+                              <td className="table-cell--end table-cell--number">{formatNumber(row.conversions)}</td>
                               <td className="table-cell--end table-cell--number">
-                                {row.add_cost == null
+                                {row.conversion_cost == null
                                   ? "—"
-                                  : `¥${Number(row.add_cost).toFixed(2)}`}
+                                  : `¥${Number(row.conversion_cost).toFixed(2)}`}
                               </td>
                               <td className="table-cell--start">{row.recharge_account || "—"}</td>
                             </tr>
@@ -4318,17 +4227,19 @@ function BudgetHistoryPanel({
   title,
   history,
   emptyText,
+  failuresOnly = false,
 }: {
   title: string;
   history: OperationsCenter["budget_reset"]["history"];
   emptyText: string;
+  failuresOnly?: boolean;
 }) {
   return (
     <section className="panel operations-history-panel">
       <div className="panel-head">
         <div>
           <h2>{title}</h2>
-          <p>只展示后台真实执行与回读结果</p>
+          <p>{failuresOnly ? "只展示预算写入或回读失败的账户" : "只展示后台真实执行与回读结果"}</p>
         </div>
         <Badge appearance="tint">{history.total}</Badge>
       </div>
@@ -4341,6 +4252,7 @@ function BudgetHistoryPanel({
                 <th className="table-cell--start">账户</th>
                 <th className="table-cell--end table-cell--number">调整前</th>
                 <th className="table-cell--end table-cell--number">调整后</th>
+                {failuresOnly && <th className="table-cell--start">失败原因</th>}
                 <th className="table-cell--center">状态</th>
               </tr>
             </thead>
@@ -4362,7 +4274,8 @@ function BudgetHistoryPanel({
                       ? "—"
                       : `¥${Number(row.after_budget).toFixed(2)}`}
                   </td>
-                  <td className="table-cell--center">{row.status === "succeeded" ? "已完成" : row.status}</td>
+                  {failuresOnly && <td className="table-cell--start">{row.error || "预算写入或回读失败"}</td>}
+                  <td className="table-cell--center">{row.status === "succeeded" ? "已完成" : row.status === "failed" ? "执行失败" : row.status}</td>
                 </tr>
               ))}
             </tbody>
@@ -7905,6 +7818,7 @@ function AutomationStrategyPage({
   return (
     <section className="strategy-hub">
       <StrategyCenter
+        key={project.id}
         embedded
         project={project}
         requestedAction={
@@ -7913,31 +7827,34 @@ function AutomationStrategyPage({
             : undefined
         }
         renderRecords={(action) => (
-          <ExecutionRecordsPage
-            key={action}
-            project={project}
-            initialTasks={tasks}
-            strategyScope={action}
-          />
+          action === "budget_reset" ? (
+            <ProjectOperationsPage
+              key={action}
+              view="budget-reset"
+              project={project}
+              recordsOnly
+              embedded
+            />
+          ) : (
+            <ExecutionRecordsPage
+              key={action}
+              project={project}
+              initialTasks={tasks}
+              strategyScope={action}
+            />
+          )
         )}
-        renderGlobal={(action: GlobalJudgmentAction) => (
+        renderGlobal={(action: GlobalJudgmentAction, context: GlobalRuleContext) => (
           <section
             className="strategy-form-section realtime-closure-stack"
             aria-label={`${action === "account-status" ? "账户状态" : action === "cost-judgment" ? "成本判断" : "实时闭环"}设置`}
           >
             {action === "account-status" ? (
-              <AccountJudgmentSettings project={project} view="account-status" />
+              <AccountJudgmentSettings view="account-status" {...context} />
             ) : action === "cost-judgment" ? (
-              <AccountJudgmentSettings project={project} view="cost-judgment" />
+              <AccountJudgmentSettings view="cost-judgment" {...context} />
             ) : (
-              <>
-                <ProjectRefreshSettings project={project} />
-                <ProjectOperationsPage
-                  view="loop-check"
-                  project={project}
-                  embedded
-                />
-              </>
+              <ProjectRefreshSettings {...context} />
             )}
           </section>
         )}
@@ -7947,209 +7864,139 @@ function AutomationStrategyPage({
 }
 
 function AccountJudgmentSettings({
-  project,
   view,
+  config,
+  editing,
+  busy,
+  update,
 }: {
-  project: Project;
   view: "account-status" | "cost-judgment";
-}) {
-  const [value, setValue] = useState<CostJudgmentPreference | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{ intent: "success" | "error"; text: string } | null>(null);
-  useEffect(() => {
-    setValue(null);
-    setFeedback(null);
-    if (view === "account-status") return;
-    apiGet<CostJudgmentPreference>(`/projects/${project.id}/preferences/account_judgment`)
-      .then(setValue)
-      .catch(reason => setFeedback({ intent: "error", text: reason instanceof Error ? reason.message : "读取判定设置失败" }));
-  }, [project.id, view]);
-  const save = async () => {
-    if (!value) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const saved = await apiPatch<CostJudgmentPreference>(`/projects/${project.id}/preferences/account_judgment`, { value });
-      setValue(saved);
-      setFeedback({ intent: "success", text: "成本判断设置已保存" });
-    } catch (reason) {
-      setFeedback({ intent: "error", text: reason instanceof Error ? reason.message : "保存失败" });
-    } finally {
-      setBusy(false);
-    }
-  };
+} & GlobalRuleContext) {
   if (view === "account-status") return (
-    <section className="panel settings-section account-judgment-settings">
-      <div className="settings-section-head">
-        <div><h2>账户状态</h2><p>根据账户、计划、历史展现与自动上线分配统一判定；已淘汰为最终态</p></div>
-      </div>
-      <div className="judgment-settings-single">
-        <section className="judgment-rule-panel">
-          <div className="judgment-rule-title"><h3>判定规则</h3><span>前端只展示后台统一结果</span></div>
-          <div className="judgment-rule-list">
-            {[
-              ["未通过审核", "userStat = 4"], ["被禁用", "userStat = 7"], ["计划全停", "存在计划且全部暂停"],
-              ["预算不足", "存在计划且 userStat = 11"], ["上线", "存在计划且不属于以上状态"],
-              ["已淘汰", "无计划，且有淘汰事实或历史展现 > 0"], ["待上线", "无计划、无历史展现、有有效自动上线分配"],
-              ["空账户", "无计划、无历史展现、无有效自动上线分配"],
-            ].map(([name, description]) => <div key={name}><strong>{name}</strong><span>{description}</span></div>)}
-          </div>
-        </section>
+    <section className="strategy-global-rule account-judgment-settings">
+      <div className="judgment-reference-section">
+        <div className="judgment-reference-heading">
+          <h4>账户状态判定</h4>
+          <p>先识别最终态与百度账户状态；再根据计划、历史展现和当前有效分配判定</p>
+        </div>
+        <table className="judgment-reference-table account-status-rule-table">
+          <colgroup><col className="rule-priority-col" /><col className="rule-name-col" /><col /><col className="rule-setting-col" /></colgroup>
+          <thead><tr><th>优先级</th><th>账户状态</th><th>判定条件</th><th>设置</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><th scope="row">已淘汰</th><td>人工确认淘汰，<em>且</em>项目与计划已删除并完成回读</td><td className="rule-setting-copy">最终状态，永久保留</td></tr>
+            <tr><td>2</td><th scope="row">未通过审核</th><td>账户未进入已淘汰，<em>且</em>百度账户审核未通过</td><td><span className="rule-code-box">4</span><span className="rule-code-unit">userStat</span></td></tr>
+            <tr><td>3</td><th scope="row">被禁用</th><td>账户未进入以上状态，<em>且</em>百度账户已被禁用</td><td><span className="rule-code-box">7</span><span className="rule-code-unit">userStat</span></td></tr>
+            <tr><td>4</td><th scope="row">计划全停</th><td>账户存在计划，<em>且</em>全部计划均为暂停状态</td><td className="rule-setting-copy">全部计划 pause = true</td></tr>
+            <tr><td>5</td><th scope="row">预算不足</th><td>账户存在计划，<em>且</em>百度账户余额或预算不足</td><td><span className="rule-code-box">11</span><span className="rule-code-unit">userStat</span></td></tr>
+            <tr><td>6</td><th scope="row">上线</th><td>账户存在计划，<em>且</em>不属于“计划全停”“预算不足”等以上状态</td><td className="rule-setting-copy">剩余有计划账户</td></tr>
+            <tr><td>7</td><th scope="row">待上线</th><td>当前无计划、历史展现 = 0，<em>且</em>存在当前有效自动上线分配</td><td><span className="rule-code-box rule-code-box--wide">有效分配</span><span className="rule-code-unit">分配状态</span></td></tr>
+            <tr><td>8</td><th scope="row">空账户</th><td>当前无计划、历史展现 = 0，<em>且</em>无当前有效自动上线分配</td><td className="rule-setting-copy">允许后续分配</td></tr>
+          </tbody>
+        </table>
+        <div className="judgment-reference-note">自动策略命中后只暂停全部计划；仅账户列表中的“淘汰账户”人工确认完成后，才进入“已淘汰”最终状态。</div>
+        <div className="judgment-reference-note judgment-reference-note--info">“在用账户”包含：未通过审核、被禁用、计划全停、预算不足、上线。</div>
       </div>
     </section>
   );
-  if (!value) return feedback ? <PopupMessage intent={feedback.intent}>{feedback.text}</PopupMessage> : <LoadingView />;
+  const rawValue = config as unknown as Partial<CostJudgmentPreference> & Record<string, unknown>;
+  const normalizeStandard = (candidate: unknown) => {
+    const source = candidate && typeof candidate === "object"
+      ? candidate as Record<string, unknown>
+      : {};
+    const threshold = (key: "cold_start_spend_limit" | "cost_limit", fallback: string) => {
+      const candidateValue = source[key];
+      return typeof candidateValue === "string" || typeof candidateValue === "number"
+        ? String(candidateValue)
+        : fallback;
+    };
+    return {
+      cold_start_spend_limit: threshold("cold_start_spend_limit", "100.00"),
+      cost_limit: threshold("cost_limit", "120.00"),
+    };
+  };
+  const value: CostJudgmentPreference = {
+    mode: rawValue.mode === "copy_cash" ? "copy_cash" : "add_cash",
+    add_cash: normalizeStandard(rawValue.add_cash),
+    copy_cash: normalizeStandard(rawValue.copy_cash),
+  };
   const mode = value.mode;
   const standard = value[mode];
   const conversionName = mode === "copy_cash" ? "复制" : "加粉";
-  const setStandard = (key: "cold_start_spend_limit" | "cost_limit", next: string) =>
-    setValue({ ...value, [mode]: { ...standard, [key]: next } });
+  const setStandard = (targetMode: "add_cash" | "copy_cash", key: "cold_start_spend_limit" | "cost_limit", next: string) =>
+    update(targetMode, { ...value[targetMode], [key]: next });
+  const boundaryInput = (
+    key: "cold_start_spend_limit" | "cost_limit",
+    label: string,
+  ) => (
+    <Input
+      aria-label={label}
+      type="number"
+      min="0"
+      max="1000000"
+      step="0.01"
+      value={standard[key]}
+      contentAfter="元"
+      onChange={(_, data) => setStandard(mode, key, data.value)}
+    />
+  );
   return (
-    <section className="panel settings-section account-judgment-settings">
-      <div className="settings-section-head">
-        <div><h2>成本判断</h2><p>使用累计数据与最近 7 天数据；加粉现金成本和复制现金成本分别保存独立标准</p></div>
-        <Button appearance="primary" disabled={busy} onClick={() => void save()}>{busy ? "保存中…" : "保存设置"}</Button>
-      </div>
-      {feedback ? <PopupMessage intent={feedback.intent}>{feedback.text}</PopupMessage> : null}
-      <div className="judgment-settings-single">
-        <section className="judgment-rule-panel cost-judgment-panel">
-          <div className="judgment-rule-title"><h3>判定标准</h3><span>两套标准独立保存</span></div>
-          <div className="cost-mode-switch" role="group" aria-label="成本判断方式">
-            <button type="button" className={mode === "add_cash" ? "active" : ""} onClick={() => setValue({ ...value, mode: "add_cash" })}>加粉现金成本判定</button>
-            <button type="button" className={mode === "copy_cash" ? "active" : ""} onClick={() => setValue({ ...value, mode: "copy_cash" })}>复制现金成本判定</button>
+    <section className="strategy-global-rule account-judgment-settings">
+      <fieldset disabled={!editing || busy} className="strategy-global-fieldset">
+        <div className="cost-judgment-choice" role="group" aria-label="成本判定标准">
+          <button type="button" className={mode === "add_cash" ? "active" : ""} onClick={() => update("mode", "add_cash")}><i />加粉现金成本判定</button>
+          <button type="button" className={mode === "copy_cash" ? "active" : ""} onClick={() => update("mode", "copy_cash")}><i />复制现金成本判定</button>
+        </div>
+        <div className="judgment-reference-section">
+          <div className="judgment-reference-heading">
+            <div>
+              <h4>{conversionName}现金成本判定</h4>
+              <p>统一使用累计现金消耗与最近 7 天现金消耗；账户列表、数据报表、预算追加和账户淘汰均跟随当前已发布标准</p>
+            </div>
           </div>
-          <div className="cost-standard-fields">
-            <Field label="冷启动累计消耗线" hint={`累计消耗达到此值且没有${conversionName}时判为“空耗”`}>
-              <Input type="number" min="0" max="1000000" step="0.01" value={standard.cold_start_spend_limit} contentAfter="元" onChange={(_, data) => setStandard("cold_start_spend_limit", data.value)} />
-            </Field>
-            <Field label={`${conversionName}现金成本合格线`} hint="累计成本优先；累计合格后再判断最近 7 天成本">
-              <Input type="number" min="0" max="1000000" step="0.01" value={standard.cost_limit} contentAfter="元" onChange={(_, data) => setStandard("cost_limit", data.value)} />
-            </Field>
-          </div>
-          <div className="cost-rule-summary">
-            <span><b>冷启动期</b>累计消耗低于消耗线，且无{conversionName}</span>
-            <span><b>空耗</b>累计消耗达到消耗线，且无{conversionName}</span>
-            <span><b>成本高</b>累计现金成本高于合格线</span>
-            <span><b>成本上涨</b>累计合格，且近 7 天成本超线，或无转化空耗超过消耗线</span>
-            <span><b>成本合格</b>累计与近 7 天成本均合格，且近 7 天无超线空耗</span>
-          </div>
-        </section>
-      </div>
+          <table className="judgment-reference-table cost-boundary-table">
+            <colgroup><col className="cost-stage-col" /><col /><col className="cost-setting-col" /></colgroup>
+            <thead><tr><th>成本判断</th><th>唯一判定</th><th>边界设置(现金)</th></tr></thead>
+            <tbody>
+              <tr><th scope="row">冷启动期</th><td>累计现金消耗低于观察线，<em>且</em>没有{conversionName}</td><td className="cost-boundary-editor">累计现金消耗 &lt; {boundaryInput("cold_start_spend_limit", `${conversionName}冷启动期现金消耗线`)}</td></tr>
+              <tr><th scope="row">空耗</th><td>累计现金消耗达到观察线，<em>且</em>没有{conversionName}</td><td className="cost-boundary-editor">累计现金消耗 ≥ {boundaryInput("cold_start_spend_limit", `${conversionName}空耗现金消耗线`)}</td></tr>
+              <tr><th scope="row">成本高</th><td>总{conversionName}现金成本高于合格线</td><td className="cost-boundary-editor">总现金成本 &gt; {boundaryInput("cost_limit", `${conversionName}成本高现金成本线`)}</td></tr>
+              <tr><th scope="row">成本上涨</th><td>总{conversionName}现金成本合格，<em>但是</em>最近 7 天现金成本超线<em>或</em>现金空耗超线</td><td className="cost-boundary-editor cost-boundary-editor--compound">总现金成本 ≤ {boundaryInput("cost_limit", `${conversionName}成本上涨现金成本线`)}；近 7 天现金成本使用同一合格线，或现金空耗 &gt; {boundaryInput("cold_start_spend_limit", `${conversionName}最近7天现金空耗线`)}</td></tr>
+              <tr><th scope="row">成本合格</th><td>总{conversionName}现金成本合格，<em>且</em>最近 7 天成本合格</td><td className="cost-boundary-editor">总成本、近 7 天成本 ≤ {boundaryInput("cost_limit", `${conversionName}成本合格现金成本线`)}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </fieldset>
     </section>
   );
 }
 
-function ProjectRefreshSettings({ project }: { project: Project }) {
-  const [value, setValue] = useState<SettingsPreference | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [feedback, setFeedback] = useState<{
-    intent: "success" | "error";
-    text: string;
-  } | null>(null);
-  useEffect(() => {
-    setValue(null);
-    apiGet<SettingsPreference>(`/projects/${project.id}/preferences/settings`)
-      .then((result) => {
-        setValue(result);
-        setUiTimeZone(result.timezone);
-      })
-      .catch((reason) =>
-        setFeedback({
-          intent: "error",
-          text:
-            reason instanceof Error ? reason.message : "读取项目刷新设置失败",
-        }),
-      );
-  }, [project.id]);
-  const save = async () => {
-    if (!value) return;
-    setBusy(true);
-    setFeedback(null);
-    try {
-      const saved = await apiPatch<SettingsPreference>(
-        `/projects/${project.id}/preferences/settings`,
-        { value },
-      );
-      setValue(saved);
-      setUiTimeZone(saved.timezone);
-      setFeedback({ intent: "success", text: "项目刷新设置已保存" });
-    } catch (reason) {
-      setFeedback({
-        intent: "error",
-        text: reason instanceof Error ? reason.message : "保存失败",
-      });
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (!value)
-    return feedback ? (
-      <PopupMessage intent={feedback.intent}>{feedback.text}</PopupMessage>
-    ) : (
-      <LoadingView />
-    );
+function ProjectRefreshSettings({ config, editing, busy, update }: GlobalRuleContext) {
+  const value = config as unknown as SettingsPreference;
   return (
-    <section className="panel settings-section project-refresh-settings">
-      <div className="settings-section-head">
-        <div>
-          <h2>项目数据刷新</h2>
-          <p>
-            该周期覆盖账户、百度报表、好多粉、预算、创意和归因等闭环数据，不属于某一个报表页面
-          </p>
-        </div>
-        <Button
-          appearance="primary"
-          disabled={busy}
-          onClick={() => void save()}
-        >
-          {busy ? "保存中…" : "保存设置"}
-        </Button>
-      </div>
-      {feedback && (
-        <PopupMessage intent={feedback.intent}>{feedback.text}</PopupMessage>
-      )}
-      <div className="settings-form-grid">
-        <Field
-          label="项目闭环刷新周期（分钟）"
-          hint="默认 60 分钟，允许 15–1440 分钟"
-        >
-          <Input
-            type="number"
-            min={15}
-            max={1440}
-            value={String(value.report_refresh_minutes)}
-            onChange={(_, data) =>
-              setValue({
-                ...value,
-                report_refresh_minutes: Number(data.value) || 60,
-              })
-            }
-          />
-        </Field>
-        <Field label="页面时区">
-          <select
-            value={value.timezone}
-            onChange={(event) =>
-              setValue({ ...value, timezone: event.target.value })
-            }
-          >
-            <option value="Asia/Shanghai">北京时间（Asia/Shanghai）</option>
-            <option value="UTC">UTC</option>
-          </select>
-        </Field>
-      </div>
-      <label className="setting-row">
-        <Checkbox
-          checked={value.automation_guard}
+    <section className="strategy-global-rule project-refresh-settings">
+      <fieldset disabled={!editing || busy} className="strategy-global-fieldset">
+      <div className="project-refresh-cycle">
+        <label htmlFor="project-refresh-minutes">项目闭环刷新周期（分钟）</label>
+        <Input
+          id="project-refresh-minutes"
+          aria-label="项目闭环刷新周期（分钟）"
+          type="number"
+          min={15}
+          max={1440}
+          value={String(value.report_refresh_minutes)}
           onChange={(_, data) =>
-            setValue({ ...value, automation_guard: data.checked === true })
+            update("report_refresh_minutes", Number(data.value) || 60)
           }
         />
+        <small>默认 60 分钟，允许 15–1440 分钟；从每个整数点开始计算</small>
+      </div>
+      <div className="setting-row data-protection-row">
         <span>
-          <strong>自动化数据保护闸</strong>
-          <small>数据缺失、归因异常或水位滞后时阻止自动写入百度</small>
+          <strong>两级数据保护</strong>
+          <small>系统性数据源故障时暂停相关策略；单个账户缺数据或归因异常时，仅跳过该账户并记录原因</small>
         </span>
-      </label>
+      </div>
+      </fieldset>
     </section>
   );
 }

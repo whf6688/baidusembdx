@@ -138,7 +138,7 @@ def classify_account_status(
     has_active_allocation: bool,
 ) -> str:
     """Apply the product rule in one testable place; eliminated is the final state."""
-    if plan_count == 0 and (confirmed_eliminated or historical_impressions > 0):
+    if plan_count == 0 and confirmed_eliminated:
         return ACCOUNT_STATUS_ELIMINATED
     if remote_status_code == 4:
         return ACCOUNT_STATUS_REJECTED
@@ -155,19 +155,21 @@ def classify_account_status(
 
 def classify_cost_status(
     *,
-    cumulative_spend: Decimal,
+    cumulative_cash_spend: Decimal | None,
     conversion_count: int,
     cash_cost: Decimal | None,
     recent_cash_cost: Decimal | None,
-    recent_spend: Decimal,
+    recent_cash_spend: Decimal | None,
     recent_conversion_count: int,
     cold_start_spend_limit: Decimal,
     cost_limit: Decimal,
 ) -> str:
+    if cumulative_cash_spend is None:
+        return COST_STATUS_PENDING
     if conversion_count <= 0:
         return (
             COST_STATUS_COLD_START
-            if cumulative_spend < cold_start_spend_limit
+            if cumulative_cash_spend < cold_start_spend_limit
             else COST_STATUS_EMPTY_SPEND
         )
     if cash_cost is None:
@@ -176,7 +178,9 @@ def classify_cost_status(
         return COST_STATUS_HIGH
     recent_cost_is_high = recent_cash_cost is not None and recent_cash_cost > cost_limit
     recent_empty_spend_is_high = (
-        recent_conversion_count <= 0 and recent_spend > cold_start_spend_limit
+        recent_conversion_count <= 0
+        and recent_cash_spend is not None
+        and recent_cash_spend > cold_start_spend_limit
     )
     return COST_STATUS_RISING if recent_cost_is_high or recent_empty_spend_is_high else COST_STATUS_QUALIFIED
 
@@ -251,7 +255,6 @@ def judgment_facts(db: Session, project_id: uuid.UUID) -> JudgmentFacts:
 def account_status_expression(facts: JudgmentFacts):
     plans = func.coalesce(facts.campaign_facts.c.plan_count, 0)
     paused = func.coalesce(facts.campaign_facts.c.paused_plan_count, 0)
-    impressions = func.coalesce(facts.lifetime_metrics.c.historical_impressions, 0)
     no_plans = plans == 0
     eliminated_fact = or_(
         Account.eliminated_at.is_not(None),
@@ -263,7 +266,7 @@ def account_status_expression(facts: JudgmentFacts):
         else literal(False)
     )
     return case(
-        ((no_plans & (eliminated_fact | (impressions > 0))), ACCOUNT_STATUS_ELIMINATED),
+        ((no_plans & eliminated_fact), ACCOUNT_STATUS_ELIMINATED),
         (Account.remote_status_code == 4, ACCOUNT_STATUS_REJECTED),
         (Account.remote_status_code == 7, ACCOUNT_STATUS_DISABLED),
         (((plans > 0) & (paused == plans)), ACCOUNT_STATUS_ALL_PAUSED),
@@ -325,20 +328,22 @@ def cost_judgment_expressions(facts: JudgmentFacts, preference: dict):
     cold_limit = Decimal(rules["cold_start_spend_limit"])
     cost_limit = Decimal(rules["cost_limit"])
     status = case(
-        (((conversions <= 0) & (spend < cold_limit)), COST_STATUS_COLD_START),
+        ((cash_spend.is_(None)), COST_STATUS_PENDING),
+        (((conversions <= 0) & (cash_spend < cold_limit)), COST_STATUS_COLD_START),
         ((conversions <= 0), COST_STATUS_EMPTY_SPEND),
-        ((cash_cost.is_(None)), COST_STATUS_PENDING),
         ((cash_cost > cost_limit), COST_STATUS_HIGH),
-        (((recent_cash_cost > cost_limit) | ((recent_conversions <= 0) & (recent_spend > cold_limit))), COST_STATUS_RISING),
+        (((recent_cash_cost > cost_limit) | ((recent_conversions <= 0) & (recent_cash_spend > cold_limit))), COST_STATUS_RISING),
         else_=COST_STATUS_QUALIFIED,
     )
     return {
         "mode": mode,
         "spend": spend,
+        "cash_spend": cash_spend,
         "conversions": conversions,
         "cash_cost": cash_cost,
         "recent_cash_cost": recent_cash_cost,
         "recent_spend": recent_spend,
+        "recent_cash_spend": recent_cash_spend,
         "recent_conversions": recent_conversions,
         "status": status,
     }

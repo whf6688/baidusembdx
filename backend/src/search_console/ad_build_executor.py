@@ -1448,7 +1448,10 @@ def execute_ad_build_workflow(db, task: BackgroundTask, operation: Operation, cl
 
     prior = task.result if isinstance(task.result, dict) else {}
     state = prior.get("workflow_state") if isinstance(prior.get("workflow_state"), dict) else {}
-    state.setdefault("ocpc_name", "减肥项目")
+    state.setdefault(
+        "ocpc_name",
+        str(operation.payload.get("ocpc_project_name") or "减肥项目"),
+    )
     state.setdefault("started_at", datetime.now(UTC).isoformat())
     _phase_start(state, "total")
 
@@ -1931,8 +1934,10 @@ def execute_ad_build_cleanup(db, task: BackgroundTask, operation: Operation, cli
     state["completed_at"] = datetime.now(UTC).isoformat()
     if retirement_only:
         account.lifecycle_stage = ELIMINATED
-        account.eliminated_at = datetime.now(UTC)
+        account.lifecycle_evaluated_at = datetime.now(UTC)
+        account.eliminated_at = account.lifecycle_evaluated_at
         account.elimination_reason = "人工淘汰：删除 oCPC 项目和计划"
+        account.elimination_task_id = task.id
         db.add(AuditEvent(
             project_id=account.project_id,
             actor=operation.confirmed_by or operation.requested_by,

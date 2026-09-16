@@ -158,6 +158,8 @@
   .account-list-table .account-name-expand span { color: var(--ads-text-secondary); }
 
   .account-status-state, .account-lifecycle-state { display: inline-flex; min-height: 20px; align-items: center; padding: 0 6px; border: 0; border-radius: 10px; color: var(--ads-text-secondary); background: var(--ads-surface-subtle); font-size: 11px; line-height: 20px; white-space: nowrap; }
+  .account-list-table tbody tr:hover .account-status-state,
+  .account-list-table tbody tr:hover .account-lifecycle-state { background: var(--ads-surface-selected); }
 
   .account-campaign-expanded-row > td { padding: 0; background: #f2faf5; }
   .account-campaign-panel { margin: 0; overflow: hidden; border: 0; border-bottom: 1px solid #d9e8df; border-radius: 0; background: #f2faf5; }

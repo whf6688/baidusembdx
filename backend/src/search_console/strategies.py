@@ -7,28 +7,70 @@ from decimal import Decimal, InvalidOperation
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .models import StrategyPolicy, StrategyVersion
+from .account_judgment import (
+    ACCOUNT_JUDGMENT_PREFERENCE_KEY,
+    default_account_judgment_preference,
+    normalize_account_judgment_preference,
+)
+from .models import ProjectPreference, StrategyPolicy, StrategyVersion
 from .schemas import KeywordTierRuleConfig
 
 
-STRATEGY_KEYS = ("budget_reset", "budget_append", "elimination", "keyword_tiers")
+STRATEGY_KEYS = (
+    "budget_reset",
+    "budget_append",
+    "elimination",
+    "account_status",
+    "cost_judgment",
+    "realtime_closure",
+    "keyword_tiers",
+)
 DEFAULT_BUDGET_APPEND_ROUND_AMOUNTS = [
     {"round": round_number, "amount": "50.00"}
     for round_number in range(1, 11)
 ]
+EXECUTION_MODES = {"off", "suggest", "confirm", "auto"}
+EXECUTION_CYCLES = {"global", "closed_loop", "daily", "periodic"}
+LOCKED_GLOBAL_STRATEGIES = {"account_status", "cost_judgment", "realtime_closure", "keyword_tiers"}
+DEFAULT_EXECUTION_SETTINGS = {
+    "budget_reset": {"execution_mode": "auto", "execution_cycle": "daily", "execution_period_days": 1},
+    "budget_append": {"execution_mode": "auto", "execution_cycle": "closed_loop", "execution_period_days": 1},
+    "elimination": {"execution_mode": "auto", "execution_cycle": "closed_loop", "execution_period_days": 1},
+    "account_status": {"execution_mode": "auto", "execution_cycle": "global", "execution_period_days": 1},
+    "cost_judgment": {"execution_mode": "auto", "execution_cycle": "global", "execution_period_days": 1},
+    "realtime_closure": {"execution_mode": "auto", "execution_cycle": "global", "execution_period_days": 1},
+    "keyword_tiers": {"execution_mode": "auto", "execution_cycle": "global", "execution_period_days": 1},
+}
 DEFAULT_STRATEGY_CONFIGS = {
-    "budget_reset": {"target_budget": "50.00", "schedule_times": ["00:00"]},
+    "budget_reset": {
+        "target_budget": "50.00",
+        "minimum_difference": "0.01",
+        "failure_retry_count": 3,
+        "failure_retry_interval_seconds": 60,
+        "schedule_times": ["00:00"],
+        **DEFAULT_EXECUTION_SETTINGS["budget_reset"],
+    },
     "budget_append": {
         "round_amounts": DEFAULT_BUDGET_APPEND_ROUND_AMOUNTS,
         "add_cost_limit": "100.00",
         "utilization_limit": "0.80",
         "schedule_times": [f"{hour:02d}:30" for hour in range(1, 24)],
+        **DEFAULT_EXECUTION_SETTINGS["budget_append"],
     },
     "elimination": {
         "spend_without_add_limit": "100.00", "add_cost_limit": "120.00",
         "schedule_times": ["23:20"],
+        **DEFAULT_EXECUTION_SETTINGS["elimination"],
     },
-    "keyword_tiers": KeywordTierRuleConfig().model_dump(mode="json"),
+    "account_status": {"rules_version": "account-status-v1", **DEFAULT_EXECUTION_SETTINGS["account_status"]},
+    "cost_judgment": {**default_account_judgment_preference(), **DEFAULT_EXECUTION_SETTINGS["cost_judgment"]},
+    "realtime_closure": {
+        "report_refresh_minutes": 60,
+        "timezone": "Asia/Shanghai",
+        "automation_guard": True,
+        **DEFAULT_EXECUTION_SETTINGS["realtime_closure"],
+    },
+    "keyword_tiers": {**KeywordTierRuleConfig().model_dump(mode="json"), **DEFAULT_EXECUTION_SETTINGS["keyword_tiers"]},
 }
 
 
@@ -65,6 +107,48 @@ def _times(config: dict, *, multiple: bool) -> list[str]:
     if not multiple and len(normalized) != 1:
         raise StrategyConfigError("该策略只能设置一个每日执行时间")
     return sorted(normalized)
+
+
+def _integer_setting(
+    config: dict,
+    key: str,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        value = int(config.get(key, default))
+    except (TypeError, ValueError) as exc:
+        raise StrategyConfigError(f"{key} 必须是整数") from exc
+    if value < minimum or value > maximum:
+        raise StrategyConfigError(f"{key} 必须在 {minimum} 至 {maximum} 之间")
+    return value
+
+
+def normalize_execution_settings(strategy_key: str, raw: dict) -> dict[str, str | int]:
+    """Validate the shared runtime controls and enforce global invariants."""
+    defaults = DEFAULT_EXECUTION_SETTINGS[strategy_key]
+    if strategy_key in LOCKED_GLOBAL_STRATEGIES:
+        return dict(defaults)
+    mode = str(raw.get("execution_mode") or defaults["execution_mode"])
+    cycle = str(raw.get("execution_cycle") or defaults["execution_cycle"])
+    if mode not in EXECUTION_MODES:
+        raise StrategyConfigError("执行模式必须是关闭、仅建议、人工确认或自动执行")
+    if cycle not in EXECUTION_CYCLES:
+        raise StrategyConfigError("执行周期必须是全局执行、闭环周期、每日执行或周期执行")
+    period_days = _integer_setting(
+        raw,
+        "execution_period_days",
+        default=int(defaults["execution_period_days"]),
+        minimum=1,
+        maximum=365,
+    )
+    return {
+        "execution_mode": mode,
+        "execution_cycle": cycle,
+        "execution_period_days": period_days,
+    }
 
 
 def normalize_budget_append_round_amounts(config: dict) -> list[dict[str, int | str]]:
@@ -121,13 +205,53 @@ def validate_strategy_config(strategy_key: str, raw: dict) -> dict:
         raise StrategyConfigError("未知策略")
     if not isinstance(raw, dict):
         raise StrategyConfigError("策略配置必须是对象")
+    execution = normalize_execution_settings(strategy_key, raw)
     if strategy_key == "keyword_tiers":
         try:
-            return KeywordTierRuleConfig.model_validate(raw).model_dump(mode="json")
+            rule = KeywordTierRuleConfig.model_validate(raw).model_dump(mode="json")
+            return {**rule, **execution}
         except ValueError as exc:
             raise StrategyConfigError(str(exc)) from exc
+    if strategy_key == "account_status":
+        return {"rules_version": "account-status-v1", **execution}
+    if strategy_key == "cost_judgment":
+        try:
+            return {**normalize_account_judgment_preference(raw), **execution}
+        except ValueError as exc:
+            raise StrategyConfigError(str(exc)) from exc
+    if strategy_key == "realtime_closure":
+        try:
+            refresh_minutes = int(raw.get("report_refresh_minutes", 60))
+        except (TypeError, ValueError) as exc:
+            raise StrategyConfigError("项目闭环刷新周期必须是整数") from exc
+        if refresh_minutes < 15 or refresh_minutes > 1440:
+            raise StrategyConfigError("项目闭环刷新周期必须在 15–1440 分钟之间")
+        timezone = str(raw.get("timezone") or "Asia/Shanghai")
+        if timezone not in {"Asia/Shanghai", "UTC"}:
+            raise StrategyConfigError("页面时区无效")
+        return {
+            "report_refresh_minutes": refresh_minutes,
+            "timezone": timezone,
+            # Data safety is a mandatory execution invariant. Keep the legacy
+            # field in persisted configs for compatibility, but never allow a
+            # published rule to disable the two-level guard.
+            "automation_guard": True,
+            **execution,
+        }
     if strategy_key == "budget_reset":
-        return {"target_budget": _money(raw, "target_budget"), "schedule_times": _times(raw, multiple=False)}
+        reset = {**DEFAULT_STRATEGY_CONFIGS["budget_reset"], **raw}
+        return {
+            "target_budget": _money(reset, "target_budget"),
+            "minimum_difference": _money(reset, "minimum_difference"),
+            "failure_retry_count": _integer_setting(
+                reset, "failure_retry_count", default=3, minimum=0, maximum=10,
+            ),
+            "failure_retry_interval_seconds": _integer_setting(
+                reset, "failure_retry_interval_seconds", default=60, minimum=10, maximum=3600,
+            ),
+            "schedule_times": _times(reset, multiple=False),
+            **execution,
+        }
     if strategy_key == "budget_append":
         try:
             utilization = Decimal(str(raw["utilization_limit"]))
@@ -140,12 +264,32 @@ def validate_strategy_config(strategy_key: str, raw: dict) -> dict:
             "add_cost_limit": _money(raw, "add_cost_limit"),
             "utilization_limit": str(utilization.normalize()),
             "schedule_times": _times(raw, multiple=True),
+            **execution,
         }
     return {
         "spend_without_add_limit": _money(raw, "spend_without_add_limit"),
         "add_cost_limit": _money(raw, "add_cost_limit"),
         "schedule_times": _times(raw, multiple=False),
+        **execution,
     }
+
+
+def _initial_strategy_config(db: Session, project_id: uuid.UUID, key: str) -> dict:
+    preference_key = (
+        ACCOUNT_JUDGMENT_PREFERENCE_KEY
+        if key == "cost_judgment"
+        else "settings" if key == "realtime_closure" else None
+    )
+    if preference_key is None:
+        return DEFAULT_STRATEGY_CONFIGS[key]
+    row = db.scalar(select(ProjectPreference).where(
+        ProjectPreference.project_id == project_id,
+        ProjectPreference.key == preference_key,
+    ))
+    if key == "cost_judgment":
+        return normalize_account_judgment_preference(row.value if row else None)
+    value = row.value if row and isinstance(row.value, dict) else {}
+    return {**DEFAULT_STRATEGY_CONFIGS[key], **value}
 
 
 def ensure_strategy_policies(db: Session, project_id: uuid.UUID, actor: str = "system-migration") -> list[StrategyPolicy]:
@@ -157,7 +301,7 @@ def ensure_strategy_policies(db: Session, project_id: uuid.UUID, actor: str = "s
         policy = StrategyPolicy(project_id=project_id, strategy_key=key, revision=1)
         db.add(policy)
         db.flush()
-        config = validate_strategy_config(key, DEFAULT_STRATEGY_CONFIGS[key])
+        config = validate_strategy_config(key, _initial_strategy_config(db, project_id, key))
         version = StrategyVersion(
             policy_id=policy.id, version_number=1, status="published", config=config,
             config_hash=config_hash(config), created_by=actor, published_by=actor,

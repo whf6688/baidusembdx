@@ -15,7 +15,7 @@ const permissionRows: Array<{ key: PermissionModule; label: string; description:
   { key: "auto_launch", label: "自动上线", description: "自动搭建、物料、创意与执行记录" },
   { key: "reports", label: "数据报表", description: "报表查询；管理权限可下载导出" },
   { key: "finance_reports", label: "财务报表", description: "充值对账查询；管理权限可填写利润报表" },
-  { key: "member_management", label: "成员管理", description: "普通成员最多查看，只有系统管理员可配置" },
+  { key: "member_management", label: "成员管理", description: "管理权限可配置项目成员；系统管理员账号仅本人可修改" },
   { key: "strategies", label: "自动策略", description: "规则、运行设置、试运行与发布" },
 ];
 
@@ -182,7 +182,7 @@ export function MembersPage({ project, localIdentity, isLocalEnvironment, onSwit
         <label><span>数据范围</span><select value={draft.data_scope} onChange={(event) => setDraft({ ...draft, data_scope: event.target.value as MemberDraft["data_scope"], supervisor_id: event.target.value === "self" ? draft.supervisor_id : "" })}><option value="self">仅本人运营账户</option><option value="team">本人及直属成员</option><option value="project">项目全部账户</option></select></label>
         <label><span>直属主管</span><select disabled={draft.data_scope !== "self"} value={draft.supervisor_id} onChange={(event) => setDraft({ ...draft, supervisor_id: event.target.value })}><option value="">不设置主管</option>{data?.supervisors.filter((item) => item.id !== (editing !== "new" ? editing?.id : "")).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
         {editing !== "new" && <label><span>成员状态</span><select value={draft.is_active ? "enabled" : "disabled"} onChange={(event) => setDraft({ ...draft, is_active: event.target.value === "enabled" })}><option value="enabled">启用</option><option value="disabled">停用</option></select></label>}
-      </div><div className="permission-matrix"><div className="permission-matrix-head"><span>导航模块</span><span>隐藏</span><span>查看</span><span>管理</span></div>{permissionRows.map((row) => <div className="permission-matrix-row" key={row.key}><span><strong>{row.label}</strong><small>{row.description}</small></span>{(["hidden", "view", "manage"] as PermissionLevel[]).map((level) => <label key={level}><input type="radio" name={row.key} checked={draft.permissions[row.key] === level} disabled={row.key === "member_management" && level === "manage"} onChange={() => setPermission(row.key, level)} /><span>{level === "hidden" ? "隐藏" : level === "view" ? "查看" : "管理"}</span></label>)}</div>)}</div></>}</div></DialogContent>
+      </div><div className="permission-matrix"><div className="permission-matrix-head"><span>导航模块</span><span>隐藏</span><span>查看</span><span>管理</span></div>{permissionRows.map((row) => <div className="permission-matrix-row" key={row.key}><span><strong>{row.label}</strong><small>{row.description}</small></span>{(["hidden", "view", "manage"] as PermissionLevel[]).map((level) => <label key={level}><input type="radio" name={row.key} checked={draft.permissions[row.key] === level} onChange={() => setPermission(row.key, level)} /><span>{level === "hidden" ? "隐藏" : level === "view" ? "查看" : "管理"}</span></label>)}</div>)}</div></>}</div></DialogContent>
       <DialogActions><Button appearance="secondary" disabled={busy} onClick={() => setEditing(null)}>取消</Button><Button appearance="primary" disabled={busy} onClick={() => setConfirming(true)}>检查并保存</Button></DialogActions>
     </DialogBody></DialogSurface></Dialog>
     <Dialog open={confirming} onOpenChange={(_, next) => { if (!busy) setConfirming(next.open); }}><DialogSurface className="member-confirm-dialog"><DialogBody>

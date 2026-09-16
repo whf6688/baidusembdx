@@ -8,11 +8,23 @@ const policies = [
   { key: 'budget_reset', revision: 1, active: version, draft: null },
   { key: 'budget_append', revision: 1, active: { ...version, id: 'v2', config: { round_amounts: roundAmounts, add_cost_limit: '100.00', utilization_limit: '0.8', schedule_times: ['01:30'] } }, draft: null },
   { key: 'elimination', revision: 1, active: { ...version, id: 'v3', config: { spend_without_add_limit: '100.00', add_cost_limit: '120.00', schedule_times: ['23:20'] } }, draft: null },
+  { key: 'account_status', revision: 1, active: { ...version, id: 'v-account-status', config: { rules_version: 'account-status-v1' } }, draft: null },
+  { key: 'cost_judgment', revision: 1, active: { ...version, id: 'v-cost-judgment', config: { mode: 'add_cash', add_cash: { cold_start_spend_limit: '100.00', cost_limit: '120.00' }, copy_cash: { cold_start_spend_limit: '90.00', cost_limit: '88.00' } } }, draft: { ...version, id: 'v-cost-judgment-draft', status: 'draft', config: { mode: 'copy_cash', add_cash: { cold_start_spend_limit: '100.00', cost_limit: '120.00' }, copy_cash: { cold_start_spend_limit: '90.00', cost_limit: '88.00' } } } },
+  { key: 'realtime_closure', revision: 1, active: { ...version, id: 'v-realtime-closure', config: { refresh_interval_minutes: 15, failure_protection_enabled: true } }, draft: null },
   { key: 'keyword_tiers', revision: 1, active: { ...version, id: 'v4', config: { a_add_cost_max: '110', b_next_add_cost_max: '100', c_add_growth_factor: '1.2', c_projected_cost_max: '120', empty_spend_min: '70', d_spend_min: '10' } }, draft: null },
 ]
+const buildSettings = {
+  items: [{ campaign_name: 'A成本', keyword_count: 2217, repeat_count: 5, is_configured: true }],
+  plan_count: 1,
+  has_draft: false,
+  has_published: true,
+  updated_by: 'system',
+  updated_at: '2026-09-16T00:00:00Z',
+}
 
 afterEach(() => {
   cleanup()
+  window.history.replaceState({}, '', '/')
   vi.unstubAllGlobals()
 })
 
@@ -20,10 +32,12 @@ describe('StrategyCenter', () => {
   it('groups the supported automation actions and omits keyword tiers', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
-      const data = url.endsWith('/versions') ? [version] : policies
+      const data = url.endsWith('/ad-build-plan-settings') ? buildSettings : url.endsWith('/versions') ? [version] : policies
       return new Response(JSON.stringify({ request_id: 'test', status: 'ok', data }), { status: 200, headers: { 'content-type': 'application/json' } })
     }))
     render(<StrategyCenter project={{ id: 'p1', name: '减肥搜索', code: 'search', enabled: true, account_count: 1 }} />)
+    await waitFor(() => expect(screen.getByRole('region', { name: '搭建设置工作区' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '预算追加' }))
     await waitFor(() => expect(screen.getByDisplayValue('50.00')).toBeInTheDocument())
     expect(screen.getByText('实时调整')).toBeInTheDocument()
     expect(screen.getByText('周期调整')).toBeInTheDocument()
@@ -47,10 +61,14 @@ describe('StrategyCenter', () => {
     expect(triggerHeading).toBeInTheDocument()
     expect(roundHeading.parentElement).toHaveClass('strategy-inline-heading')
     expect(triggerHeading.parentElement).toHaveClass('strategy-inline-heading')
-    expect(screen.getByLabelText('加粉成本上限')).toHaveValue(100)
+    expect(screen.getByLabelText('复制现金成本合格线')).toHaveTextContent('88.00元')
+    expect(screen.getByText('跟随已保存的成本判断草稿')).toBeInTheDocument()
     expect(screen.getByLabelText('预算利用率')).toHaveValue(80)
     expect(screen.getByLabelText('第 1 轮追加金额')).toHaveValue(10)
     expect(screen.getByLabelText('第 10 轮及以上追加金额')).toHaveValue(100)
+    const roundAmountsTable = screen.getByRole('table', { name: '追加轮次金额' })
+    expect(within(roundAmountsTable).getAllByText('账户币')).toHaveLength(10)
+    expect(within(roundAmountsTable).queryByText('元')).not.toBeInTheDocument()
     expect(screen.queryByText(/售价阶段/)).not.toBeInTheDocument()
     expect(screen.queryByText(/倍数/)).not.toBeInTheDocument()
     expect(screen.queryByText('规则参数')).not.toBeInTheDocument()
@@ -67,14 +85,18 @@ describe('StrategyCenter', () => {
     expect(screen.getByRole('button', { name: '发布规则' })).toBeDisabled()
 
     fireEvent.click(screen.getByRole('button', { name: '预算重置' }))
+    expect(screen.getByRole('tab', { name: '执行失败记录' })).toBeInTheDocument()
     const resetWorkspace = screen.getByRole('region', { name: '预算重置工作区' })
     const reset = within(resetWorkspace)
     expect(reset.getByRole('heading', { name: '触发条件' })).toBeInTheDocument()
-    expect(reset.getByText('账户已启用且未淘汰')).toBeInTheDocument()
-    expect(reset.getByText('测试期')).toBeInTheDocument()
-    expect(reset.getByText('预算快照在 60 分钟内')).toBeInTheDocument()
-    expect(reset.getByText('当前日预算不等于填写金额')).toBeInTheDocument()
-    await waitFor(() => expect(reset.getByLabelText('固定日预算')).toHaveValue(50))
+    expect(reset.getByText(/计划全停、预算不足或上线/)).toBeInTheDocument()
+    expect(reset.queryByText('冷启动期')).not.toBeInTheDocument()
+    expect(reset.queryByText(/预算快照/)).not.toBeInTheDocument()
+    expect(reset.getByLabelText('预算重置执行时间')).toHaveValue('00:00')
+    expect(reset.getByLabelText('初始预算')).toHaveValue(50)
+    expect(reset.getByLabelText('预算重置最小差额')).toHaveValue(0.01)
+    expect(reset.getByLabelText('预算重置失败重试次数')).toHaveValue(3)
+    expect(reset.getByLabelText('预算重置重试间隔')).toHaveValue(60)
   })
 
   it('prepares an edited rule for publishing from the top release button', async () => {
@@ -96,6 +118,7 @@ describe('StrategyCenter', () => {
     const strategyFetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
       const url = String(input)
       let data: unknown = policies
+      if (url.endsWith('/ad-build-plan-settings')) data = buildSettings
       if (url.endsWith('/versions')) data = [version]
       if (url.endsWith('/draft')) data = nextPolicy
       if (url.endsWith('/dry-run')) {
@@ -114,6 +137,8 @@ describe('StrategyCenter', () => {
     vi.stubGlobal('fetch', strategyFetch)
 
     render(<StrategyCenter project={{ id: 'p1', name: '减肥搜索', code: 'search', enabled: true, account_count: 1 }} />)
+    await waitFor(() => expect(screen.getByRole('region', { name: '搭建设置工作区' })).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '预算追加' }))
     await waitFor(() => expect(screen.getByLabelText('第 1 轮追加金额')).toHaveValue(10))
     fireEvent.click(screen.getByRole('button', { name: '编辑规则' }))
     expect(screen.getByRole('button', { name: '取消' })).toBeInTheDocument()
@@ -136,6 +161,33 @@ describe('StrategyCenter', () => {
     expect(draftCall).toBeDefined()
     expect(JSON.parse(String(draftCall?.[1]?.body)).config.utilization_limit).toBe('0.85')
     expect(strategyFetch.mock.calls.some(([input]) => String(input).endsWith('/dry-run'))).toBe(true)
+  })
+
+  it('opens the first action initially and restores the last action and pane after refresh', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      const data = url.endsWith('/ad-build-plan-settings') ? buildSettings : policies
+      return new Response(JSON.stringify({ request_id: 'test', status: 'ok', data }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }))
+
+    const project = { id: 'persist-project', name: '减肥搜索', code: 'search', enabled: true, account_count: 1 }
+    const records = () => <div>已恢复执行记录</div>
+    render(<StrategyCenter project={project} renderRecords={records} />)
+    await waitFor(() => expect(screen.getByRole('region', { name: '搭建设置工作区' })).toBeInTheDocument())
+    expect(screen.getByRole('button', { name: '搭建设置' })).toHaveAttribute('aria-current', 'page')
+
+    fireEvent.click(screen.getByRole('button', { name: '预算重置' }))
+    fireEvent.click(await screen.findByRole('tab', { name: '执行失败记录' }))
+    await waitFor(() => expect(screen.getByText('已恢复执行记录')).toBeInTheDocument())
+
+    cleanup()
+    render(<StrategyCenter project={project} renderRecords={records} />)
+    await waitFor(() => expect(screen.getByRole('region', { name: '预算重置工作区' })).toBeInTheDocument())
+    expect(screen.getByRole('tab', { name: '执行失败记录' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('已恢复执行记录')).toBeInTheDocument()
   })
 
   it('supports read-save, edit-save, and re-read-save for build settings', async () => {

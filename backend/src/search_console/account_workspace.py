@@ -2,12 +2,13 @@ import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 
-from sqlalchemy import String, cast, func, literal, or_, select
+from sqlalchemy import String, case, cast, func, literal, or_, select
 from sqlalchemy.orm import Session
 
 from .account_judgment import (
-    ACCOUNT_STATUS_IN_USE,
-    COST_MODE_ADD,
+    ACCOUNT_STATUS_ALL_PAUSED,
+    ACCOUNT_STATUS_DISABLED,
+    ACCOUNT_STATUS_REJECTED,
     account_status_expression,
     cost_judgment_expressions,
     expand_account_status_filter,
@@ -104,7 +105,7 @@ def account_workspace_data(
     remote_statuses: str | None = None,
     account_names: str | None = None,
     search: str | None = None,
-    sort_by: str = "spend",
+    sort_by: str = "default",
     sort_order: str = "desc",
     page: int = 1,
     page_size: int = 20,
@@ -274,14 +275,24 @@ def account_workspace_data(
         "balance": Account.balance,
         "updated_at": Account.last_synced_at,
     }
-    sort_expression = sort_fields.get(sort_by, Account.baidu_account_id)
-    order = sort_expression.desc().nulls_last() if sort_order == "desc" else sort_expression.asc().nulls_last()
+    if sort_by == "default":
+        status_priority = case(
+            (resolved_account_status == ACCOUNT_STATUS_REJECTED, 0),
+            (resolved_account_status == ACCOUNT_STATUS_DISABLED, 1),
+            (resolved_account_status == ACCOUNT_STATUS_ALL_PAUSED, 2),
+            else_=3,
+        )
+        ordering = (status_priority.asc(), spend.desc(), Account.baidu_account_id.asc())
+    else:
+        sort_expression = sort_fields.get(sort_by, Account.baidu_account_id)
+        order = sort_expression.desc().nulls_last() if sort_order == "desc" else sort_expression.asc().nulls_last()
+        ordering = (order, Account.baidu_account_id.asc())
     total = int(db.scalar(with_judgment_joins(select(func.count(Account.id)).select_from(Account)).where(*filters)) or 0)
     rows = db.execute(
         with_judgment_joins(select(Account, metrics, resolved_account_status.label("account_status"), resolved_cost_status.label("cost_status")))
         .outerjoin(metrics, metrics.c.account_id == Account.id)
         .where(*filters)
-        .order_by(order, Account.baidu_account_id)
+        .order_by(*ordering)
         .offset((page - 1) * page_size)
         .limit(page_size)
     ).all()
