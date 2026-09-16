@@ -1,0 +1,83 @@
+name: baidu-search
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: baidu_platform
+      POSTGRES_USER: search_app
+      POSTGRES_PASSWORD: ${SEARCH_DATABASE_PASSWORD}
+    ports: ["5432:5432"]
+    volumes:
+      - ${PROJECT_DATA_ROOT}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U search_app -d baidu_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports: ["6379:6379"]
+    volumes:
+      - ${PROJECT_DATA_ROOT}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    image: baidu-search-backend:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    command: sh -c "alembic upgrade head && uvicorn search_console.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - .:/workspace
+      - ${PROJECT_DATA_ROOT}/analytics:/data
+      - ${PROJECT_DATA_ROOT}/storage:/storage
+      - ${PROJECT_DATA_ROOT}/secrets:/run/search-console-secrets
+      - ${PROJECT_DATA_ROOT}/git-sync:/run/git-sync:ro
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  worker:
+    image: baidu-search-backend:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    command: celery -A search_console.worker.celery_app worker --loglevel=INFO --concurrency=2
+    volumes:
+      - .:/workspace
+      - ${PROJECT_DATA_ROOT}/analytics:/data
+      - ${PROJECT_DATA_ROOT}/storage:/storage
+      - ${PROJECT_DATA_ROOT}/secrets:/run/search-console-secrets
+      - ${PROJECT_DATA_ROOT}/git-sync:/run/git-sync:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  scheduler:
+    image: baidu-search-backend:local
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    env_file: .env
+    command: celery -A search_console.worker.celery_app beat --loglevel=INFO
+    volumes:
+      - ${PROJECT_DATA_ROOT}/secrets:/run/search-console-secrets
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  web:
+    build:
+      context: frontend
+    depends_on: [api]
+    ports: ["${WEB_PORT:-8281}:80"]

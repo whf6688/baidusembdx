@@ -1,0 +1,16 @@
+/www/wwwlogs/baidu-authsem.dyy966.cn.log /www/wwwlogs/baidu-authsem.dyy966.cn.error.log {
+    daily
+    rotate 14
+    maxsize 100M
+    compress
+    delaycompress
+    missingok
+    notifempty
+    create 0640 www www
+    sharedscripts
+    postrotate
+        if [ -s /www/server/nginx/logs/nginx.pid ]; then
+            kill -USR1 "$(cat /www/server/nginx/logs/nginx.pid)"
+        fi
+    endscript
+}

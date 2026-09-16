@@ -1,0 +1,107 @@
+name: baidu-search-prod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 20m
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: baidu_platform
+      POSTGRES_USER: search_app
+      POSTGRES_PASSWORD: ${SEARCH_DATABASE_PASSWORD}
+    volumes:
+      - ${SEARCH_DATA_ROOT}/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U search_app -d baidu_platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    mem_limit: 768m
+    logging: *default-logging
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - ${SEARCH_DATA_ROOT}/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    mem_limit: 256m
+    logging: *default-logging
+
+  api:
+    image: baidu-search-backend:${RELEASE_ID:-current}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env.production
+    command: sh -c "alembic upgrade head && uvicorn search_console.main:app --host 0.0.0.0 --port 8000"
+    volumes:
+      - /www/baidu-search/repository:/workspace
+      - ${SEARCH_DATA_ROOT}/analytics:/data
+      - ${SEARCH_DATA_ROOT}/storage:/storage
+      - /www/baidu-search/secrets:/run/search-console-secrets
+      - /www/baidu-search/secrets/git-sync:/run/git-sync:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 768m
+    logging: *default-logging
+
+  worker:
+    image: baidu-search-backend:${RELEASE_ID:-current}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env.production
+    command: celery -A search_console.worker.celery_app worker --loglevel=INFO --concurrency=1
+    volumes:
+      - /www/baidu-search/repository:/workspace
+      - ${SEARCH_DATA_ROOT}/analytics:/data
+      - ${SEARCH_DATA_ROOT}/storage:/storage
+      - /www/baidu-search/secrets:/run/search-console-secrets
+      - /www/baidu-search/secrets/git-sync:/run/git-sync:ro
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 1024m
+    logging: *default-logging
+
+  scheduler:
+    image: baidu-search-backend:${RELEASE_ID:-current}
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env.production
+    command: celery -A search_console.worker.celery_app beat --loglevel=INFO
+    volumes:
+      - /www/baidu-search/secrets:/run/search-console-secrets
+    depends_on:
+      postgres: {condition: service_healthy}
+      redis: {condition: service_healthy}
+    mem_limit: 256m
+    logging: *default-logging
+
+  web:
+    image: baidu-search-web:${RELEASE_ID:-current}
+    build:
+      context: ../frontend
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:18080:80"
+    depends_on:
+      - api
+    mem_limit: 128m
+    logging: *default-logging

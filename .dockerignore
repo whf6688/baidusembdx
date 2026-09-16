@@ -1,0 +1,15 @@
+.git
+.agents
+.codex
+.venv
+.env*
+data
+storage
+deploy
+frontend/node_modules
+frontend/dist
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+*.duckdb
+*.duckdb.wal

@@ -1,0 +1,36 @@
+{
+  "name": "baidu-search-console-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "dev:ui": "vite --host 0.0.0.0 --port 8280 --strictPort",
+    "build": "tsc -b && vite build",
+    "lint": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:browser": "playwright test"
+  },
+  "dependencies": {
+    "@fluentui/react-components": "^9.72.0",
+    "@fluentui/react-icons": "^2.0.309",
+    "react": "^19.1.0",
+    "react-booking-selector": "https://codeload.github.com/garethpaul/react-booking-selector/tar.gz/8d561408ec64bd90bfc4b1742a8e12d03eded115",
+    "react-dom": "^19.1.0",
+    "styled-components": "^6.1.19"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/user-event": "^14.6.7",
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.8.3",
+    "vite": "^7.0.0",
+    "vitest": "^5.0.0"
+  }
+}

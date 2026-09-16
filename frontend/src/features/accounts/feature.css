@@ -1,0 +1,261 @@
+.account-management-frame {
+    display: flex;
+    min-width: 0;
+    height: calc(100dvh - 94px);
+    min-height: 520px;
+    flex-direction: column;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: var(--ads-surface);
+  }
+
+  .account-management-view-controls { display: flex; min-height: 48px; flex: 0 0 auto; align-items: center; gap: 8px; padding: 6px 0; border: 0; }
+  .manager-account-tabs { display: flex; min-width: 0; min-height: 34px; flex: 1 1 auto; align-items: center; gap: 0; padding: 0; overflow-x: auto; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-surface); scrollbar-width: none; }
+  .manager-account-tabs::-webkit-scrollbar { display: none; width: 0; height: 0; }
+  .manager-account-tabs button { position: relative; display: inline-flex; min-height: 32px; align-items: center; gap: 6px; padding: 0 11px; border: 0; border-right: 1px solid var(--ads-border-subtle); border-radius: 0; background: transparent; color: var(--ads-text-secondary); font-size: 13px; font-weight: 400; white-space: nowrap; }
+  .manager-account-tabs button:hover { color: var(--ads-text); background: var(--ads-surface-subtle); }
+  .manager-account-tabs button.active { background: var(--ads-surface-selected); color: var(--ads-primary); font-weight: 400; }
+  .manager-account-tabs button.active::after { display: none; }
+  .manager-account-tabs em { color: var(--ads-text-muted); font-size: 11px; font-style: normal; }
+
+  .account-management-toolbar { display: flex; min-width: max-content; min-height: 34px; align-items: center; justify-content: flex-end; gap: 8px; padding: 0; overflow: visible; }
+  .account-management-date { display: flex; flex: 0 0 auto; align-items: center; }
+  .account-management-actions { display: flex; min-width: 0; align-items: center; gap: 8px; }
+  .account-management-query-actions { margin-left: auto; flex: 0 0 auto; justify-content: flex-end; white-space: nowrap; }
+  .add-manager-button.fui-Button { color: #fff; background: var(--ads-primary); font-weight: 600; }
+  .add-manager-button.fui-Button:hover { color: #fff; background: var(--ads-primary-hover); }
+  .account-management-search { width: 220px; min-width: 220px; height: var(--ads-control-height); }
+  .account-management-search .search-field { width: 100%; }
+  .selected-account-count { color: var(--ads-text-secondary); font-size: 12px; white-space: nowrap; }
+  .account-management-table-wrap { width: 100%; min-height: 0; flex: 1 1 auto; overflow: auto; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-surface) var(--ads-radius-surface) 0 0; background: var(--ads-surface); }
+  .account-management-table { width: 100%; min-width: 1080px; border-collapse: separate; border-spacing: 0; table-layout: auto; }
+  .account-management-frame.is-manager-directory .account-management-table-wrap { overflow-x: hidden; }
+  .manager-management-table { width: 100%; min-width: 0; table-layout: fixed; }
+  .manager-management-table th:nth-child(1) { width: 7%; }
+  .manager-management-table th:nth-child(2) { width: 10%; }
+  .manager-management-table th:nth-child(3) { width: 8%; }
+  .manager-management-table th:nth-child(4) { width: 11%; }
+  .manager-management-table th:nth-child(5) { width: 8%; }
+  .manager-management-table th:nth-child(6) { width: 7%; }
+  .manager-management-table th:nth-child(7) { width: 38%; }
+  .manager-management-table th:nth-child(8) { width: 11%; }
+  .manager-management-table th, .manager-management-table td { padding-inline: 7px; overflow: hidden; text-overflow: ellipsis; }
+  .manager-management-table th:nth-child(7), .manager-management-table td:nth-child(7) { padding-inline: 4px; overflow: visible; }
+  .account-management-table th { position: sticky; top: 0; z-index: 2; height: 40px; padding: 0 12px; border-bottom: 1px solid var(--ads-border); color: var(--ads-table-header); background: var(--ads-surface-subtle); font-size: 12px; font-weight: 400; white-space: nowrap; }
+  .account-management-table td { min-height: 40px; height: 40px; padding: 8px 12px; border-bottom: 1px solid var(--ads-border-subtle); color: var(--ads-text); font-size: 13px; font-weight: 400; line-height: 20px; white-space: nowrap; }
+  .account-management-table tbody tr:hover > td { background: var(--ads-surface-selected); }
+  .account-management-table .number-cell { text-align: right; font-variant-numeric: tabular-nums; }
+  .account-management-table .data-sort { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; font-weight: inherit; white-space: nowrap; }
+  .account-management-table .data-sort:hover, .account-management-table .data-sort.is-active { color: var(--ads-primary); }
+  .account-management-table .data-sort i { color: var(--ads-text-muted); font-size: 11px; font-style: normal; }
+  .account-management-empty { height: 120px; color: var(--ads-text-secondary); text-align: center; }
+  .manager-row-actions { display: flex; align-items: center; justify-content: center; flex-wrap: nowrap; gap: 4px; white-space: nowrap; }
+  .manager-row-actions .fui-Button { min-width: auto; min-height: 26px; height: 26px; padding-inline: 5px; font-size: 12px; }
+  .manager-management-table tbody tr.is-manager-paused > td { color: var(--ads-text-secondary); background: var(--ads-surface-subtle); }
+  .manager-setting-cell { display: inline-flex; min-width: 0; align-items: center; justify-content: center; gap: 4px; }
+  .manager-setting-cell > span { color: inherit; font-variant-numeric: tabular-nums; }
+  .manager-setting-cell.is-warning > span { color: #c43131; font-weight: 600; }
+  .manager-setting-cell .fui-Button { min-width: 36px; min-height: 24px; height: 24px; padding: 0 5px; color: var(--ads-primary); font-size: 12px; }
+  .manager-setting-form { display: grid; gap: 6px; }
+  .manager-setting-form > label { color: var(--ads-text-secondary); font-size: 12px; }
+  .manager-setting-form .fui-Input { width: 100%; }
+  .account-management-frame.is-read-only .manager-row-actions,
+  .account-page-management.is-read-only .account-list-table td:last-child .fui-Button,
+  .account-management-frame.is-read-only .account-retirement-action { display: none; }
+  .account-management-frame.is-read-only .account-list-table tbody td:first-child input { visibility: hidden; }
+
+  .account-page-operations { height: calc(100dvh - 112px); }
+  .account-page-operations .account-management-view-controls { display: flex; min-width: 0; min-height: 48px; align-items: center; padding: 6px 8px; overflow-x: auto; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-surface) var(--ads-radius-surface) 0 0; background: var(--ads-surface); }
+  .account-page-operations .account-management-toolbar { min-width: max-content; min-height: 34px; flex: 1 0 auto; flex-wrap: nowrap; justify-content: space-between; padding: 0; }
+  .account-page-operations .account-management-date { flex: 0 0 auto; }
+  .account-page-operations .account-management-query-actions { margin-left: auto; }
+  .account-toolbar-filters { display: flex; align-items: center; gap: 6px; }
+  .account-toolbar-filter { display: inline-flex; align-items: center; gap: 4px; color: var(--ads-text-secondary); font-size: 12px; white-space: nowrap; }
+  .account-toolbar-filter select { min-width: 86px; height: var(--ads-control-height); padding: 0 26px 0 8px; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-control); color: var(--ads-text); background: var(--ads-surface); font: inherit; }
+  .account-column-heading { display: inline-flex; align-items: center; gap: 1px; }
+  .account-column-filter-trigger { display: inline-flex; width: 16px; height: 16px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 2px; color: #8b96a8; background: transparent; cursor: pointer; opacity: 0; transition: opacity 120ms ease, color 120ms ease, background 120ms ease; }
+  .account-column-filter-trigger svg { width: 12px; height: 12px; }
+  .account-management-table th:hover .account-column-filter-trigger, .account-column-filter-trigger:focus-visible, .account-column-filter-trigger.is-active { opacity: 1; }
+  .account-column-filter-trigger:hover, .account-column-filter-trigger.is-active { color: var(--ads-primary); background: transparent; }
+  .account-column-filter-popover.fui-PopoverSurface { width: min(280px, calc(100vw - 32px)); padding: 0; overflow: hidden; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-surface); background: var(--ads-surface); box-shadow: 0 8px 20px rgb(31 35 40 / 14%); }
+  .account-column-filter-menu { display: grid; width: 100%; gap: 10px; padding: 10px 12px 12px; background: var(--ads-surface); }
+  .account-column-filter-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .account-column-filter-menu-head strong { color: var(--ads-text); font-size: 13px; font-weight: 600; }
+  .account-column-filter-menu-head button { display: inline-flex; width: 24px; height: 24px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--ads-radius-control); color: var(--ads-text-secondary); background: transparent; cursor: pointer; }
+  .account-column-filter-menu-head button:hover { color: var(--ads-text); background: var(--ads-surface-subtle); }
+  .account-column-filter-search-row { display: flex; min-width: 0; align-items: center; gap: 8px; }
+  .account-column-filter-select-all { display: inline-flex; width: 16px; height: 32px; flex: 0 0 16px; align-items: center; justify-content: center; }
+  .account-column-filter-search.search-field { width: 100%; min-width: 0; flex: 1 1 auto; }
+  .account-column-filter-options { display: grid; max-height: 176px; gap: 2px; overflow: auto; }
+  .account-column-filter-options label { display: flex; min-height: 30px; align-items: center; gap: 8px; padding: 0 4px; border-radius: var(--ads-radius-control); color: var(--ads-text); font: inherit; cursor: pointer; }
+  .account-column-filter-options label:hover { background: var(--ads-surface-subtle); }
+  .account-column-filter-options label span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .account-column-filter-options span { padding: 8px; color: var(--ads-text-secondary); font-size: 12px; }
+  .account-column-filter-options label span { padding: 0; color: var(--ads-text); font-size: 13px; }
+  .account-column-filter-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* Keep each header aligned with its cell: descriptive fields left, metrics right. */
+  .account-management-table.account-list-table th { text-align: left; }
+  .account-list-table th.table-cell--center { text-align: center; }
+  .account-list-table th.table-cell--end { text-align: right; }
+  .account-list-table th .data-sort { width: 100%; }
+  .account-list-table th.table-cell--start .data-sort { justify-content: flex-start; text-align: left; }
+  .account-list-table th.table-cell--center .data-sort { justify-content: center; text-align: center; }
+  .account-list-table th.table-cell--end .data-sort { justify-content: flex-end; text-align: right; }
+  .account-page-operations .account-management-table-wrap { overflow-x: hidden; overflow-y: auto; }
+  .account-management-table.account-list-table--operations { width: 100%; min-width: 0; table-layout: fixed; }
+  .account-list-table--operations th,
+  .account-list-table--operations td { padding-inline: 4px; }
+  .account-list-table--operations th,
+  .account-list-table--operations th .data-sort { line-height: 14px; white-space: normal; }
+  .account-list-table--operations th:nth-last-child(-n + 2) .data-sort { font-size: 11px; }
+  .account-list-table--operations .account-col-select { width: 3%; }
+  .account-list-table--operations .account-col-status { width: 4.8%; }
+  .account-list-table--operations .account-col-lifecycle { width: 5.3%; }
+  .account-list-table--operations .account-col-operator { width: 5.1%; }
+  .account-list-table--operations .account-col-manager { width: 6.7%; }
+  .account-list-table--operations .account-col-type { width: 5.5%; }
+  .account-list-table--operations .account-col-page-type { width: 5.2%; }
+  .account-list-table--operations .account-col-name { width: 9.4%; }
+  .account-list-table--operations .account-col-id { width: 6.5%; }
+  .account-list-table--operations .account-col-budget { width: 5.4%; }
+  .account-list-table--operations .account-col-impressions { width: 5.1%; }
+  .account-list-table--operations .account-col-clicks { width: 4.6%; }
+  .account-list-table--operations .account-col-spend { width: 5.5%; }
+  .account-list-table--operations .account-col-adds { width: 4.4%; }
+  .account-list-table--operations .account-col-cpm { width: 4.6%; }
+  .account-list-table--operations .account-col-ctr { width: 4.2%; }
+  .account-list-table--operations .account-col-add-cost { width: 7.4%; }
+  .account-list-table--operations .account-col-cash-add-cost { width: 7.3%; }
+  .account-list-table td { overflow: hidden; text-overflow: ellipsis; }
+
+  .account-list-overview {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    flex: 0 0 auto;
+    gap: 0;
+    margin: 0 0 12px;
+    padding: 0;
+    overflow-x: hidden;
+    border: 1px solid var(--ads-border);
+    border-radius: var(--ads-radius-surface);
+    background: var(--ads-surface);
+  }
+
+  .account-list-overview > div { display: block; min-width: 0; min-height: 78px; overflow: hidden; padding: 10px 8px; border-right: 1px solid var(--ads-border-subtle); }
+  .account-list-overview > div:last-child { border-right: 0; }
+  .account-list-overview > div > span { display: block; margin-bottom: 5px; color: var(--ads-text-secondary); font-size: 12px; line-height: 16px; }
+  .account-list-overview strong { display: block; overflow: hidden; color: var(--ads-text); font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 22px; text-overflow: ellipsis; white-space: nowrap; }
+  .account-list-overview-trend { display: inline-flex; align-items: center; gap: 7px; margin-top: 8px; color: var(--ads-text-secondary); font-size: 12px; font-style: normal; line-height: 1.1; white-space: nowrap; }
+  .account-list-overview-trend b { color: var(--ads-text-muted); font-weight: 650; }
+  .account-list-overview-trend.up b { color: #ff5a55; }
+  .account-list-overview-trend.down b { color: var(--ads-success-fg); }
+  .account-list-overview-trend small { color: var(--ads-text-secondary); font-size: 12px; }
+
+  .account-list-table .account-name-expand { display: inline-flex; max-width: 100%; align-items: center; gap: 6px; overflow: hidden; border: 0; background: transparent; color: var(--ads-primary); font-size: inherit; font-weight: 400; text-align: left; text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+  .account-list-table .account-name-expand:hover { color: var(--ads-primary-hover); text-decoration: underline; }
+  .account-list-table .account-name-expand span { color: var(--ads-text-secondary); }
+
+  .account-status-state, .account-lifecycle-state { display: inline-flex; min-height: 20px; align-items: center; padding: 0 6px; border: 0; border-radius: 10px; color: var(--ads-text-secondary); background: var(--ads-surface-subtle); font-size: 11px; line-height: 20px; white-space: nowrap; }
+
+  .account-campaign-expanded-row > td { padding: 0; background: #f2faf5; }
+  .account-campaign-panel { margin: 0; overflow: hidden; border: 0; border-bottom: 1px solid #d9e8df; border-radius: 0; background: #f2faf5; }
+  .account-campaign-panel-head { display: flex; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #d9e8df; }
+  .account-campaign-panel-head > div { display: flex; min-width: 0; align-items: baseline; gap: 8px; }
+  .account-campaign-panel-head strong { color: #1677ff; font-size: 15px; font-weight: 700; }
+  .account-campaign-panel-head span, .account-campaign-panel-head small { color: var(--ads-text-secondary); font-size: 12px; }
+  .account-campaign-panel-head > .account-project-quick-row { width: auto; flex: 1 1 auto; justify-content: flex-end; overflow-x: auto; padding-bottom: 1px; }
+  .account-project-quick-area { display: grid; gap: 8px; padding: 10px 16px; background: #f2faf5; }
+  .account-project-quick-row { display: flex; width: 100%; align-items: center; justify-content: flex-start; flex-wrap: nowrap; gap: 6px; min-width: max-content; }
+  .account-project-quick-area { overflow-x: auto; scrollbar-color: #c9d8cf transparent; }
+  .account-quick-divider { padding: 0 4px; color: #64748b; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .account-project-quick-button.fui-Button, .account-project-budget-button.fui-Button { min-height: 28px; border-color: #c8dbff; border-radius: 5px; background: #fff; color: #175cd3; font-size: 12px; font-weight: 800; white-space: nowrap; }
+  .account-project-quick-button.fui-Button:hover:not(:disabled), .account-project-budget-button.fui-Button:hover:not(:disabled) { border-color: #1677ff; background: #eef5ff; color: #175cd3; }
+  .account-project-quick-button.fui-Button:active:not(:disabled), .account-project-budget-button.fui-Button:active:not(:disabled) { background: #e2efff; }
+  .account-project-quick-button.fui-Button:disabled, .account-project-budget-button.fui-Button:disabled { border-color: #d8e0ea; background: #f6f8fb; color: #94a3b8; }
+  .account-project-relative-button.fui-Button { color: #334155; border-color: #d7e0ea; }
+  .account-retirement-action.fui-Button { min-height: 28px; border-color: #fecaca; border-radius: 5px; background: #fff; color: #dc2626; font-size: 12px; font-weight: 800; white-space: nowrap; }
+  .account-retirement-action.fui-Button:hover:not(:disabled) { border-color: #f87171; background: #fff1f2; color: #b91c1c; }
+  .account-retirement-action.fui-Button:disabled { border-color: var(--ads-border-subtle); background: var(--ads-surface-subtle); color: var(--ads-text-muted); }
+  .account-campaign-notice { padding: 8px 12px; color: var(--ads-success-fg); background: var(--ads-surface-selected); font-size: 12px; }
+  .account-campaign-table-wrap { overflow-x: auto; background: #f2faf5; }
+  .account-campaign-table { width: 100%; min-width: 860px; border-collapse: collapse; background: #f2faf5; }
+  .account-campaign-table th, .account-campaign-table td { height: 32px; padding: 6px 12px; border-bottom: 1px solid var(--ads-border-subtle); font-size: 12px; font-weight: 400; }
+  .account-campaign-table td { background: #f2faf5; }
+  .account-campaign-table th { color: #344054; background: #e8f4ec; }
+  .account-campaign-message { padding: 24px 12px; color: var(--ads-text-secondary); background: #f2faf5; font-size: 12px; text-align: center; }
+  .account-campaign-message.is-error { color: var(--ads-danger-fg); background: var(--ads-danger-bg); }
+
+  .account-retirement-dialog .fui-DialogTitle { margin-bottom: 2px; }
+  .account-retirement-dialog .fui-DialogContent { display: grid; gap: 14px; }
+  .account-retirement-summary { display: flex; align-items: center; gap: 11px; }
+  .account-retirement-summary > span { display: inline-flex; width: 30px; height: 30px; flex: 0 0 30px; align-items: center; justify-content: center; border-radius: 50%; background: #fff1f2; color: #dc2626; font-size: 15px; font-weight: 800; }
+  .account-retirement-summary > div { display: grid; min-width: 0; gap: 1px; }
+  .account-retirement-summary small, .account-retirement-summary em { overflow: hidden; color: var(--ads-text-secondary); font-size: 12px; font-style: normal; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+  .account-retirement-summary strong { overflow: hidden; color: var(--ads-text); font-size: 14px; font-weight: 700; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
+  .account-retirement-scope { display: grid; gap: 7px; margin: 0; padding: 11px 13px 11px 31px; border: 1px solid var(--ads-border-subtle); border-radius: 6px; background: var(--ads-surface-subtle); color: var(--ads-text-secondary); font-size: 12px; line-height: 1.45; }
+  .account-retirement-confirm.fui-Button { background: #dc2626; }
+  .account-retirement-confirm.fui-Button:hover:not(:disabled) { background: #b91c1c; }
+
+  .account-filter-popover { width: min(380px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-surface); box-shadow: 0 8px 20px rgb(31 35 40 / 14%); }
+  .account-filter-popover-head { display: flex; min-height: 52px; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 12px; border-bottom: 1px solid var(--ads-border-subtle); }
+  .account-filter-popover-head > div { display: grid; gap: 2px; }
+  .account-filter-popover-head strong { color: var(--ads-text); font-size: 13px; font-weight: 600; }
+  .account-filter-popover-head span { color: var(--ads-text-secondary); font-size: 12px; }
+  .account-filter-popover-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; padding: 12px; }
+  .account-filter-popover-fields label { display: grid; min-width: 0; gap: 5px; color: var(--ads-text-secondary); font-size: 12px; }
+  .account-filter-popover-fields label:last-child { grid-column: 1 / -1; }
+  .account-filter-popover-fields select { width: 100%; min-width: 0; height: var(--ads-control-height); padding: 0 28px 0 10px; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-control); color: var(--ads-text); background: var(--ads-surface); font: inherit; }
+
+  .campaign-batch-dialog { width: min(980px, calc(100vw - 32px)); max-width: 980px; }
+  .campaign-dialog-content { display: grid; gap: 16px; }
+  .campaign-dialog-content > .dialog-description { margin: 0; }
+  .campaign-dialog-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 0; border-radius: var(--ads-radius-control); background: var(--ads-surface-subtle); }
+  .campaign-dialog-summary > div { display: grid; gap: 3px; padding: 10px 12px; border-right: 1px solid var(--ads-border-subtle); }
+  .campaign-dialog-summary > div:last-child { border-right: 0; }
+  .campaign-dialog-summary span { color: var(--ads-text-secondary); font-size: 11px; line-height: 16px; }
+  .campaign-dialog-summary strong { color: var(--ads-text); font-size: 13px; font-weight: 400; line-height: 20px; }
+  .campaign-current-panel { display: grid; gap: 10px; }
+  .campaign-current-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .campaign-current-heading > div { display: grid; gap: 2px; }
+  .campaign-current-heading strong, .campaign-section-heading strong { color: var(--ads-text); font-size: 13px; font-weight: 600; }
+  .campaign-current-heading span, .campaign-section-heading span { color: var(--ads-text-secondary); font-size: 12px; line-height: 18px; }
+  .campaign-current-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--ads-border); border-radius: var(--ads-radius-surface); }
+  .campaign-current-grid article { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--ads-border-subtle); }
+  .campaign-current-grid article:last-child { border-right: 0; }
+  .campaign-current-grid article > div { display: grid; gap: 3px; }
+  .campaign-current-grid small, .campaign-current-grid span { color: var(--ads-text-secondary); font-size: 11px; line-height: 16px; }
+  .campaign-current-grid strong { overflow: hidden; color: var(--ads-text); font-size: 13px; font-weight: 400; line-height: 20px; text-overflow: ellipsis; white-space: nowrap; }
+  .campaign-empty-record { padding: 8px 10px; color: var(--ads-text-secondary); background: var(--ads-surface-subtle); font-size: 12px; line-height: 18px; }
+  .campaign-operation-panel { display: grid; gap: 12px; padding-top: 16px; border-top: 1px solid var(--ads-border-subtle); }
+  .campaign-section-heading { display: grid; gap: 2px; }
+  .campaign-schedule-editor { display: grid; gap: 12px; padding: 0; }
+  .campaign-schedule-help { color: var(--ads-text-secondary); font-size: 12px; font-weight: 400; line-height: 18px; }
+  .campaign-pause-editor { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .campaign-pause-editor button { display: grid; min-height: 68px; grid-template-columns: 12px minmax(0, 1fr); grid-template-rows: auto auto; align-items: center; gap: 2px 8px; padding: 10px 12px; border: 1px solid var(--ads-border); border-radius: var(--ads-radius-control); color: var(--ads-text); background: var(--ads-surface); font: inherit; text-align: left; cursor: pointer; }
+  .campaign-pause-editor button:hover { border-color: var(--ads-border-strong); background: var(--ads-surface-subtle); }
+  .campaign-pause-editor button.is-selected { border-color: var(--ads-primary); background: var(--ads-surface-selected); }
+  .campaign-pause-editor button strong { font-size: 13px; font-weight: 400; }
+  .campaign-pause-editor button small { grid-column: 2; color: var(--ads-text-secondary); font-size: 11px; line-height: 16px; }
+  .state-dot { width: 10px; height: 10px; border-radius: 50%; }
+  .state-dot.enabled { background: var(--ads-success-fg); }
+  .state-dot.paused { background: var(--ads-warning-fg); }
+  .campaign-state-confirm-dialog { width: min(400px, calc(100vw - 32px)); }
+  .campaign-state-confirm-dialog .fui-DialogContent { display: grid; gap: 10px; }
+  .campaign-state-confirm-dialog p { margin: 0; color: var(--ads-text); font-size: 13px; line-height: 20px; }
+  .campaign-state-confirm-dialog p.dialog-description { color: var(--ads-text-secondary); font-size: 12px; line-height: 18px; }
+  .campaign-state-confirm-action.is-pause.fui-Button { background: var(--ads-danger-fg); }
+
+@media (max-width: 1280px) {
+    .account-management-toolbar { min-height: 48px; align-items: center; flex-direction: row; flex-wrap: nowrap; }
+    .account-management-toolbar > .account-management-actions:last-child { margin-left: auto; }
+    .account-management-search { width: 220px; min-width: 220px; }
+    .account-list-overview { grid-template-columns: repeat(12, minmax(0, 1fr)); }
+}
+
+@media (max-width: 900px) {
+  .campaign-dialog-summary, .campaign-current-grid, .campaign-pause-editor { grid-template-columns: 1fr; }
+  .campaign-dialog-summary > div, .campaign-current-grid article { border-right: 0; border-bottom: 1px solid var(--ads-border-subtle); }
+  .campaign-dialog-summary > div:last-child, .campaign-current-grid article:last-child { border-bottom: 0; }
+}

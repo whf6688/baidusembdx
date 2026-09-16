@@ -1,0 +1,27 @@
+.report-workspace .account-management-view-controls { margin-bottom: 12px; }
+.report-account-table { min-width: 1780px; }
+.report-account-table .report-col-operator { width: 72px; }
+.report-account-table .report-col-manager { width: 112px; }
+.report-account-table .report-col-type { width: 82px; }
+.report-account-table .report-col-page-type { width: 76px; }
+.report-account-table .report-col-name { width: 150px; }
+.report-account-table .report-col-id { width: 92px; }
+.report-account-table .report-col-balance,
+.report-account-table .report-col-spend,
+.report-account-table .report-col-cash-spend { width: 90px; }
+.report-account-table .report-col-impressions,
+.report-account-table .report-col-clicks,
+.report-account-table .report-col-uv,
+.report-account-table .report-col-copies,
+.report-account-table .report-col-adds,
+.report-account-table .report-col-cpc { width: 72px; }
+.report-account-table .report-col-uv-cost,
+.report-account-table .report-col-copy-cost,
+.report-account-table .report-col-add-cost { width: 88px; }
+.report-account-table .report-col-cash-add-cost { width: 112px; }
+.report-account-link { display: block; overflow: hidden; color: var(--ads-primary); text-decoration: none; text-overflow: ellipsis; white-space: nowrap; }
+.report-account-link:hover { color: var(--ads-primary-hover); text-decoration: underline; }
+
+@media (max-width: 1280px) {
+  .report-workspace .account-management-toolbar { align-items: center; }
+}

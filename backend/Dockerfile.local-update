@@ -1,0 +1,10 @@
+# Fast local overlay used when the full dependency image is already available.
+# Production and clean-machine builds continue to use backend/Dockerfile.
+FROM baidu-search-backend:local
+
+RUN rm -rf /app/backend /usr/local/lib/python3.12/site-packages/search_console
+COPY backend /app/backend
+COPY backend/src/search_console /usr/local/lib/python3.12/site-packages/search_console
+
+WORKDIR /app/backend
+EXPOSE 8000
