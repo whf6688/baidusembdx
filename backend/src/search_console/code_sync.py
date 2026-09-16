@@ -86,10 +86,23 @@ def _sanitize(value: str) -> str:
 def _ssh_command(settings: Settings) -> str | None:
     if not settings.code_sync_ssh_key_path.is_file():
         return None
+    key_path = settings.code_sync_ssh_key_path
+    if key_path.stat().st_mode & 0o077:
+        private_dir = Path("/tmp/baidu-search-code-sync")
+        private_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        prepared_key = private_dir / "id_ed25519"
+        source = key_path.read_bytes()
+        if not prepared_key.exists() or prepared_key.read_bytes() != source:
+            temporary = prepared_key.with_suffix(".tmp")
+            temporary.write_bytes(source)
+            temporary.chmod(0o600)
+            temporary.replace(prepared_key)
+        prepared_key.chmod(0o600)
+        key_path = prepared_key
     parts = [
         "ssh",
         "-i",
-        str(settings.code_sync_ssh_key_path),
+        str(key_path),
         "-o",
         "IdentitiesOnly=yes",
         "-o",

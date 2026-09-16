@@ -441,7 +441,7 @@ function App() {
         const canRead = (module: PermissionModule) =>
           access.permissions[module] !== "hidden";
         const canReadAccounts = canRead("account_management") || canRead("account_list") || canRead("auto_launch");
-        const canReadOperations = canReadAccounts || canRead("reports") || canRead("strategies");
+        const canReadOperations = canReadAccounts || canRead("reports") || canRead("finance_reports") || canRead("strategies");
         const [managerRows, accountRows, alertRows, taskRows, settings] =
           await Promise.all([
             canReadAccounts ? apiGet<AccountManager[]>(
@@ -582,6 +582,7 @@ function App() {
     page === "accounts" ? "account_management" :
     page === "account-list" || page === "loop-check" || page === "budget-reset" || page === "budget-append" || page === "eliminations" ? "account_list" :
     page === "reports" ? "reports" :
+    page === "finance-reports" ? "finance_reports" :
     page === "members" || page === "settings" ? "member_management" :
     page === "strategies" ? "strategies" : "auto_launch";
   const hasAnyProjectPermission = Boolean(projectAccess && Object.values(projectAccess.permissions).some((level) => level !== "hidden"));

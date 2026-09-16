@@ -1,0 +1,62 @@
+.finance-tabs {
+  display: flex;
+  gap: 22px;
+  min-height: 46px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--colorNeutralStroke2);
+  background: var(--colorNeutralBackground1);
+}
+.finance-tabs button {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--colorNeutralForeground2);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.finance-tabs button.active { color: var(--colorBrandForeground1); }
+.finance-tabs button.active::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--colorBrandBackground);
+}
+.finance-workspace { margin-top: 0; }
+.finance-toolbar { justify-content: space-between; }
+.finance-toolbar-actions,
+.finance-edit-actions { display: flex; align-items: center; gap: 8px; }
+.finance-segmented {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--colorNeutralStroke1);
+  border-radius: 6px;
+  background: var(--colorNeutralBackground1);
+}
+.finance-segmented button {
+  min-width: 54px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-right: 1px solid var(--colorNeutralStroke2);
+  background: transparent;
+  color: var(--colorNeutralForeground2);
+  cursor: pointer;
+}
+.finance-segmented button:last-child { border-right: 0; }
+.finance-segmented button.active { background: var(--colorBrandBackground2); color: var(--colorBrandForeground1); font-weight: 600; }
+.finance-operator-segmented { max-width: 420px; overflow-x: auto; }
+.finance-table td small { display: block; margin-top: 2px; color: var(--colorNeutralForeground3); font-size: 11px; }
+.finance-summary-row td { background: var(--colorNeutralBackground2); font-weight: 700; }
+.finance-type { display: inline-flex; min-width: 42px; justify-content: center; border-radius: 999px; padding: 2px 8px; font-size: 12px; }
+.finance-type--recharge { background: #e7f6ed; color: #107c41; }
+.finance-type--refund { background: #fde7e9; color: #a4262c; }
+.finance-money-input { width: 132px; }
+.finance-profit-value { font-weight: 700; }
+@media (max-width: 1100px) {
+  .finance-toolbar { align-items: flex-start; flex-direction: column; }
+  .finance-toolbar-actions { width: 100%; flex-wrap: wrap; }
+}
