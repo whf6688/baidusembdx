@@ -35,6 +35,7 @@ def test_repository_url_is_limited_to_search_repository() -> None:
 
 def test_sensitive_and_runtime_paths_are_never_syncable() -> None:
     assert path_is_forbidden(".env")
+    assert not path_is_forbidden(".env.example")
     assert path_is_forbidden("data/postgres/PG_VERSION")
     assert path_is_forbidden("storage/raw-response.json")
     assert path_is_forbidden("deploy/private_key.pem")

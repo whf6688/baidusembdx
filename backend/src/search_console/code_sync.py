@@ -196,6 +196,8 @@ def path_is_forbidden(path_text: str) -> bool:
     normalized = normalized.lstrip("/")
     lowered = normalized.casefold()
     path = Path(lowered)
+    if lowered == ".env.example":
+        return False
     if lowered.startswith(".env") or normalized == "=":
         return True
     if path.parts and path.parts[0] in _FORBIDDEN_ROOTS:
